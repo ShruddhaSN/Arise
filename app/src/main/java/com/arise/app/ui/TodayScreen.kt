@@ -63,6 +63,7 @@ import com.arise.app.game.Knowledge
 import com.arise.app.game.Program
 import com.arise.app.game.Progress
 import com.arise.app.game.Quest
+import com.arise.app.game.Slots
 import com.arise.app.game.Topic
 import com.arise.app.game.fmt
 import java.time.LocalDate
@@ -88,6 +89,8 @@ private class QuestActions(
     val wake: (LocalTime) -> Unit,
     val pickWake: () -> Unit,
     val later: (Quest) -> Unit,
+    val laterAt: (Quest, LocalTime) -> Unit,
+    val unsnooze: (Quest) -> Unit,
     val skip: (Quest) -> Unit,
     val undo: (Quest) -> Unit,
     val notes: (Boolean) -> Unit,
@@ -133,6 +136,7 @@ fun TodayScreen(
     var showFull by rememberSaveable { mutableStateOf(false) }
     var amountFor by remember { mutableStateOf<Quest?>(null) }
     var skipFor by remember { mutableStateOf<Quest?>(null) }
+    var laterFor by remember { mutableStateOf<Quest?>(null) }
     var pop by remember { mutableStateOf<Pair<String, Long>?>(null) }
 
     fun save(r: DayRecord) = onUpdate(data.with(r))
@@ -164,7 +168,9 @@ fun TodayScreen(
                 saveWithPop(q, rec.copy(wakeTime = "%02d:%02d".format(h, m)))
             }, init.hour, init.minute, false).show()
         },
-        later = { q -> save(rec.copy(deferred = rec.deferred + (q.id to System.currentTimeMillis()))) },
+        later = { q -> laterFor = q },
+        laterAt = { q, t -> save(rec.copy(deferred = rec.deferred + (q.id to Deck.millisAt(date, t)))) },
+        unsnooze = { q -> save(rec.copy(deferred = rec.deferred - q.id)) },
         skip = { q -> skipFor = q },
         undo = { q ->
             save(
@@ -282,10 +288,14 @@ fun TodayScreen(
 
             if (deckMode && !showFull) {
                 val cards = Deck.cards(data, date, now)
+                val snoozed = Deck.snoozed(data, date, now)
                 item {
                     Box(Modifier.tutorialTarget("deck")) {
                         DeckSection(cards, rec, lesson, passesLeft, act)
                     }
+                }
+                if (snoozed.isNotEmpty()) {
+                    item { LaterPile(snoozed, act) }
                 }
                 item {
                     val next = Deck.upNext(data, date, now)
@@ -342,6 +352,42 @@ fun TodayScreen(
 
     amountFor?.let { q ->
         AmountDialog(q, rec.amounts[q.id] ?: 0.0, onSave = { v -> act.amount(q, v); amountFor = null }, onDismiss = { amountFor = null })
+    }
+    laterFor?.let { q ->
+        val choice = Slots.choices(data, date, q, LocalTime.now())
+        AlertDialog(
+            onDismissRequest = { laterFor = null },
+            containerColor = C.Panel,
+            title = { Text("Later: ${q.title}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    choice.options.forEach { o ->
+                        Column(Modifier.fillMaxWidth()) {
+                            SysButton(
+                                if (o.best) o.label else "${o.label} · ${o.detail}",
+                                modifier = Modifier.fillMaxWidth(),
+                                selected = o.best,
+                                color = if (o.best) C.Gold else C.Glow,
+                                onClick = {
+                                    act.laterAt(q, o.at)
+                                    laterFor = null
+                                },
+                            )
+                            if (o.best) Text(o.detail, color = C.Text2, fontSize = 12.sp, modifier = Modifier.padding(start = 4.dp, top = 2.dp))
+                        }
+                    }
+                    SysButton("Pick a time…", modifier = Modifier.fillMaxWidth(), color = C.Muted, onClick = {
+                        val init = LocalTime.now().plusHours(1)
+                        TimePickerDialog(ctx, { _, h, m ->
+                            act.laterAt(q, LocalTime.of(h, m))
+                            laterFor = null
+                        }, init.hour, init.minute, false).show()
+                    })
+                    choice.note?.let { Text(it, color = C.Gold, fontSize = 12.sp) }
+                }
+            },
+            confirmButton = { TextButton(onClick = { laterFor = null }) { Text("Cancel", color = C.Muted) } },
+        )
     }
     skipFor?.let { q ->
         AlertDialog(
@@ -454,7 +500,7 @@ private fun DeckCard(b: Block, rec: DayRecord, lesson: DayLesson?, passesLeft: I
     val q = b.quest ?: return
     SystemWindow {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SysLabel("Now · ${fmt(b.time)}")
+            SysLabel(if (rec.deferred.containsKey(q.id)) "Now · moved from ${fmt(b.time)}" else "Now · ${fmt(b.time)}")
             Spacer(Modifier.weight(1f))
             Text("+${q.xp} ${q.stat.label}", color = C.Glow, fontFamily = Mono, fontSize = 12.sp)
         }
@@ -476,7 +522,7 @@ private fun DeckCard(b: Block, rec: DayRecord, lesson: DayLesson?, passesLeft: I
         }
         Spacer(Modifier.height(8.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
-            SysButton("Later", small = true, color = C.Muted, onClick = { act.later(q) })
+            if (q.id !in Slots.FIXED) SysButton("Later", small = true, color = C.Muted, onClick = { act.later(q) })
             SysButton("Not today", small = true, color = C.Danger, onClick = { act.skip(q) })
         }
         if (q.min != null) {
@@ -701,4 +747,25 @@ private fun AmountDialog(q: Quest, current: Double, onSave: (Double) -> Unit, on
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = C.Muted) } },
     )
+}
+
+@Composable
+private fun LaterPile(snoozed: List<Pair<Block, Long>>, act: QuestActions) {
+    val timeFmt = DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH)
+    Panel(accent = C.Border) {
+        Text("⏸ Later (${snoozed.size})", color = C.Text2, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        snoozed.forEach { (b, until) ->
+            val q = b.quest ?: return@forEach
+            val back = java.time.Instant.ofEpochMilli(until).atZone(java.time.ZoneId.systemDefault()).toLocalTime()
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(q.icon, modifier = Modifier.width(28.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(q.title, fontSize = 14.sp)
+                    Text("Back at ${back.format(timeFmt)}", color = C.Muted, fontSize = 12.sp)
+                }
+                SysButton("Bring back", small = true, onClick = { act.unsnooze(q) })
+            }
+        }
+    }
 }

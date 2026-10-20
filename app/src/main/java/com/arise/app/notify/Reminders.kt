@@ -62,16 +62,26 @@ object Reminders {
         }
     }
 
-    private fun nextBlock(data: AppData, from: LocalDateTime): Pair<LocalDateTime, Block>? {
-        for (d in 0L..7L) {
+    /** The next moment to notify: a schedule block, or a card coming back from "Later". Third = deferred quest id. */
+    private fun nextEvent(data: AppData, from: LocalDateTime): Triple<LocalDateTime, Block?, String?>? {
+        val zone = ZoneId.systemDefault()
+        val returns = data.records[from.toLocalDate()]?.deferred.orEmpty().mapNotNull { (id, ms) ->
+            val at = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalDateTime()
+            if (at.isAfter(from)) Triple(at, null as Block?, id as String?) else null
+        }
+        var block: Triple<LocalDateTime, Block?, String?>? = null
+        loop@ for (d in 0L..7L) {
             val date = from.toLocalDate().plusDays(d)
             for (b in Game.plan(data, date).blocks) {
                 if (!b.notify) continue
                 val at = LocalDateTime.of(date, b.time)
-                if (at.isAfter(from)) return at to b
+                if (at.isAfter(from)) {
+                    block = Triple(at, b, null)
+                    break@loop
+                }
             }
         }
-        return null
+        return (returns + listOfNotNull(block)).minByOrNull { it.first }
     }
 
     fun scheduleNext(ctx: Context, from: LocalDateTime) {
@@ -80,10 +90,11 @@ object Reminders {
         val base = Intent(ctx, ReminderReceiver::class.java)
         am.cancel(PendingIntent.getBroadcast(ctx, REQ, base, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
         if (!data.settings.notifications || !data.settings.onboarded) return
-        val (at, _) = nextBlock(data, from) ?: return
+        val (at, _, deferredId) = nextEvent(data, from) ?: return
         val intent = Intent(ctx, ReminderReceiver::class.java)
             .putExtra("date", at.toLocalDate().toString())
             .putExtra("time", at.toLocalTime().toString())
+            .putExtra("deferred", deferredId)
         val pi = PendingIntent.getBroadcast(ctx, REQ, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val millis = at.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
         if (Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()) {
@@ -94,14 +105,20 @@ object Reminders {
     }
 
     @SuppressLint("MissingPermission")
-    fun show(ctx: Context, date: LocalDate, time: LocalTime) {
+    fun show(ctx: Context, date: LocalDate, time: LocalTime, deferredId: String? = null) {
         if (Build.VERSION.SDK_INT >= 33 &&
             ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
         val data = Store.load(ctx)
         val plan = Game.plan(data, date)
-        val b = plan.blocks.firstOrNull { it.time == time && it.notify } ?: return
         val rec = data.records[date]
+        if (deferredId != null) {
+            val dq = plan.quests.firstOrNull { it.id == deferredId } ?: return
+            if (Game.settled(dq, rec)) return
+            post(ctx, "[SYSTEM] Rescheduled quest: ${dq.title}", "It's time. ${dq.full}", time.toSecondOfDay() + 1)
+            return
+        }
+        val b = plan.blocks.firstOrNull { it.time == time && it.notify } ?: return
         val q = b.quest
         if (q != null && Game.settled(q, rec)) return // already handled, no nagging
         val name = data.settings.name
@@ -136,6 +153,14 @@ object Reminders {
             }
         }
 
+        post(ctx, title, text, time.toSecondOfDay())
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun post(ctx: Context, title: String, text: String, id: Int) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
         val open = PendingIntent.getActivity(
             ctx, 0, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -150,7 +175,7 @@ object Reminders {
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
-        NotificationManagerCompat.from(ctx).notify(time.toSecondOfDay(), n)
+        NotificationManagerCompat.from(ctx).notify(id, n)
     }
 }
 
@@ -160,7 +185,7 @@ class ReminderReceiver : BroadcastReceiver() {
         val time = intent.getStringExtra("time")?.let(LocalTime::parse)
         var from = LocalDateTime.now()
         if (date != null && time != null) {
-            Reminders.show(ctx, date, time)
+            Reminders.show(ctx, date, time, intent.getStringExtra("deferred"))
             val due = LocalDateTime.of(date, time)
             if (due.isAfter(from)) from = due
         }
