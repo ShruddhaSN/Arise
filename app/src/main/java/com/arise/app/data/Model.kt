@@ -79,6 +79,10 @@ data class Settings(
     val seenLevel: Int = 1,
     /** Self-claimed bosses (e.g. Korean milestones). */
     val claimedBosses: Set<String> = emptySet(),
+    /** Treadmill settings used last time, km/h and %. */
+    val walkSpeed: Double? = null,
+    val runSpeed: Double? = null,
+    val incline: Double? = null,
 ) {
     val onboarded: Boolean get() = startDate != null
     val start: LocalDate get() = startDate ?: LocalDate.now()

@@ -240,7 +240,8 @@ object Program {
         Workout.RUN -> {
             val p = runPlan(runWeek)
             Quest(
-                "run", "Run: ${p.title}", p.summary, "10-min brisk walk on the treadmill", Stat.AGI, 70, "🏃",
+                "run", "Run: ${p.title}", "${p.summary}. The coach records how many runs you finish.",
+                null, Stat.AGI, 70, "🏃", Kind.AMOUNT, target = p.runs.size.toDouble(), unit = "runs", step = 1.0,
             )
         }
         Workout.STRENGTH -> Quest(
@@ -256,9 +257,10 @@ object Program {
 
     private fun t(h: Int, m: Int) = LocalTime.of(h, m)
 
-    fun plan(s: Settings, date: LocalDate, type: DayType): DayPlan {
+    /** [runLevel] is the run plan week earned so far (see Game.runLevel); defaults to the calendar week. */
+    fun plan(s: Settings, date: LocalDate, type: DayType, runLevel: Int = week(s, date)): DayPlan {
         val w = week(s, date)
-        val runWeek = (w + s.runWeekShift).coerceAtLeast(1)
+        val runWeek = (runLevel + s.runWeekShift).coerceAtLeast(1)
         val wq = workoutQuest(workout(s, date, type), w, runWeek)
         val up = wakeGoal(s, type)
         val b = mutableListOf<Block>()
@@ -343,8 +345,16 @@ object Program {
     }
 
     const val RUN_TIPS =
-        "Jog slowly enough that you could still talk. Treadmill guide: walk 5–5.5 km/h, " +
-            "jog 6.5–7.5 km/h, incline 1%. Wait 1.5–2 h after a meal. If a week feels too hard, tap Easier."
+        "Jog slowly enough that you could still talk. Wait 1.5–2 h after a meal. " +
+            "The plan only moves up when you finish 2 full runs in a week, otherwise the week repeats."
+
+    /** Recommended treadmill settings per segment, "or whatever feels comfortable". */
+    fun treadmillGuide(kind: SegKind): String = when (kind) {
+        SegKind.WARMUP -> "4.5–5.0 km/h · incline 1%"
+        SegKind.RUN -> "6.0–6.5 km/h · incline 1%"
+        SegKind.WALK -> "4.5–5.0 km/h · incline 1%"
+        SegKind.COOLDOWN -> "4.0 km/h · incline 0–1%"
+    }
 
     // ---- Strength: bodyweight → dumbbells ----
 

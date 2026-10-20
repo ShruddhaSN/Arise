@@ -64,8 +64,58 @@ object Game {
     fun typeFor(data: AppData, date: LocalDate): DayType =
         data.records[date]?.dayType ?: Program.defaultType(data.settings, date)
 
-    fun plan(data: AppData, date: LocalDate): DayPlan =
-        Program.plan(data.settings, date, typeFor(data, date))
+    // Plans are computed a lot (charts, streaks, bosses), so cache them for the current data snapshot.
+    private val lock = Any()
+    private var memoData: AppData? = null
+    private val planMemo = HashMap<LocalDate, DayPlan>()
+    private val levelMemo = HashMap<Int, Int>()
+
+    private fun <T> memo(data: AppData, block: () -> T): T = synchronized(lock) {
+        if (memoData !== data) {
+            memoData = data
+            planMemo.clear()
+            levelMemo.clear()
+        }
+        block()
+    }
+
+    fun plan(data: AppData, date: LocalDate): DayPlan = memo(data) {
+        planMemo.getOrPut(date) { Program.plan(data.settings, date, typeFor(data, date), runLevel(data, date)) }
+    }
+
+    /** Full runs needed in a week to move the run plan up. */
+    const val FULL_RUNS_TO_LEVEL = 2
+
+    private fun runTarget(data: AppData, level: Int): Int =
+        Program.runPlan((level + data.settings.runWeekShift).coerceAtLeast(1)).runs.size
+
+    /** Runs completed in full during program week [week], judged against run level [level]. */
+    fun fullRunsInWeek(data: AppData, week: Int, level: Int): Int {
+        val s = data.settings
+        val start = s.start.plusDays((week - 1) * 7L)
+        val target = runTarget(data, level)
+        return (0L..6L).count { d ->
+            val day = start.plusDays(d)
+            val rec = data.records[day]
+            day != s.earliest && rec != null &&
+                ((rec.amounts["run"] ?: 0.0) >= target || rec.done["run"] == Done.FULL)
+        }
+    }
+
+    /**
+     * The run plan week you've earned: it only goes up after a week with [FULL_RUNS_TO_LEVEL] full runs,
+     * otherwise the week repeats.
+     */
+    fun runLevel(data: AppData, date: LocalDate): Int = memo(data) {
+        val target = Program.week(data.settings, date)
+        levelMemo.getOrPut(target) {
+            var level = 1
+            for (w in 1 until target) {
+                if (fullRunsInWeek(data, w, level) >= FULL_RUNS_TO_LEVEL) level++
+            }
+            level
+        }
+    }
 
     // ---- Scoring a single quest ----
 
@@ -136,10 +186,14 @@ object Game {
         return !s.sick && !s.cleared
     }
 
+    /** Only Min on yes/no quests uses a pass (an old Min on a quest that is now measurable is refunded). */
     fun passesUsed(data: AppData, date: LocalDate): Int {
         val start = Program.weekStart(date)
         return (0L..6L).sumOf { d ->
-            data.records[start.plusDays(d)]?.done?.count { it.key != "notes" && it.value == Done.MIN } ?: 0
+            val day = start.plusDays(d)
+            val rec = data.records[day] ?: return@sumOf 0
+            val checkIds = plan(data, day).quests.filter { it.kind == Kind.CHECK }.map { it.id }.toSet()
+            rec.done.count { it.value == Done.MIN && it.key in checkIds }
         }
     }
 

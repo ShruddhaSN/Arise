@@ -44,6 +44,9 @@ object Store {
             put("tutorialSeen", s.tutorialSeen)
             put("seenLevel", s.seenLevel)
             put("claimedBosses", JSONArray(s.claimedBosses.toList()))
+            s.walkSpeed?.let { put("walkSpeed", it) }
+            s.runSpeed?.let { put("runSpeed", it) }
+            s.incline?.let { put("incline", it) }
         })
         val days = JSONArray()
         data.records.values.sortedBy { it.date }.forEach { r ->
@@ -91,6 +94,9 @@ object Store {
             seenLevel = sj.optInt("seenLevel", 1),
             claimedBosses = sj.optJSONArray("claimedBosses")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() }
                 ?: emptySet(),
+            walkSpeed = sj.dbl("walkSpeed"),
+            runSpeed = sj.dbl("runSpeed"),
+            incline = sj.dbl("incline"),
         )
         val records = mutableMapOf<LocalDate, DayRecord>()
         val days = root.getJSONArray("days")

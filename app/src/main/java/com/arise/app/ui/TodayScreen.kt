@@ -558,7 +558,7 @@ private fun PrimaryActions(q: Quest, rec: DayRecord, passesLeft: Int, locked: Bo
             )
         }
         Kind.AMOUNT -> {
-            if (coachTarget(q) != null) SysButton("Timer ▶", enabled = en, onClick = { act.coach(q) })
+            if (coachTarget(q) != null) SysButton(if (q.id == "run") "Coach ▶" else "Timer ▶", enabled = en, onClick = { act.coach(q) })
             SysButton("Log ${q.unit}", enabled = en, color = C.Gold, onClick = { act.askAmount(q) })
             val full = (rec.amounts[q.id] ?: 0.0) >= q.target
             SysButton(if (full) "✓ Done" else "Done", enabled = en, selected = full, color = C.Good,

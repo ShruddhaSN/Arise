@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -141,29 +142,46 @@ fun LogScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Unit) {
         }
 
         Panel {
-            SysLabel("Body & activity")
+            SysLabel("⚖ Weight & waist · weekly")
             Spacer(Modifier.height(4.dp))
-            NumField("Weight (kg), weekly, morning after the bathroom", weight) { weight = it }
+            Text("Morning, after the bathroom, before food or water.", color = C.Muted, fontSize = 12.sp)
+            NumField("Weight (kg)", weight) { weight = it }
             NumField("Waist (cm), at the belly button", waist) { waist = it }
-            NumField("Steps (phone count)", steps, decimal = false) { steps = it }
-            NumField("Longest non-stop run (min)", runMin, decimal = false) { runMin = it }
             Spacer(Modifier.height(10.dp))
-            SysButton("Save log", selected = true, modifier = Modifier.fillMaxWidth(), onClick = {
+            SysButton("Save", selected = true, small = true, onClick = {
                 val w = weight.replace(',', '.').toDoubleOrNull()
                 // Logging a weight on a weigh-in day completes that quest.
                 val done = if (w != null && Program.isWeighDay(data.settings, date)) rec.done + ("weigh" to Done.FULL) else rec.done
+                onUpdate(data.with(rec.copy(done = done, weight = w, waist = waist.replace(',', '.').toDoubleOrNull())))
+                Toast.makeText(ctx, "[SYSTEM] Weight saved", Toast.LENGTH_SHORT).show()
+            })
+        }
+
+        Panel {
+            SysLabel("👣 Steps")
+            Spacer(Modifier.height(4.dp))
+            Text("From Samsung Health. Also editable in Today's all-day box.", color = C.Muted, fontSize = 12.sp)
+            NumField("Steps", steps, decimal = false) { steps = it }
+            Spacer(Modifier.height(10.dp))
+            SysButton("Save", selected = true, small = true, onClick = {
                 onUpdate(
                     data.with(
-                        rec.copy(
-                            done = done,
-                            weight = w,
-                            waist = waist.replace(',', '.').toDoubleOrNull(),
-                            amounts = steps.toIntOrNull()?.let { rec.amounts + ("steps" to it.toDouble()) } ?: (rec.amounts - "steps"),
-                            longestRunSec = runMin.toIntOrNull()?.times(60) ?: rec.longestRunSec,
-                        ),
+                        rec.copy(amounts = steps.toIntOrNull()?.let { rec.amounts + ("steps" to it.toDouble()) } ?: (rec.amounts - "steps")),
                     ),
                 )
-                Toast.makeText(ctx, "[SYSTEM] Log saved", Toast.LENGTH_SHORT).show()
+                Toast.makeText(ctx, "[SYSTEM] Steps saved", Toast.LENGTH_SHORT).show()
+            })
+        }
+
+        Panel {
+            SysLabel("🏃 Longest non-stop run")
+            Spacer(Modifier.height(4.dp))
+            Text("The run coach fills this in. Edit it if you ran outside the app.", color = C.Muted, fontSize = 12.sp)
+            NumField("Minutes", runMin, decimal = false) { runMin = it }
+            Spacer(Modifier.height(10.dp))
+            SysButton("Save", selected = true, small = true, onClick = {
+                onUpdate(data.with(rec.copy(longestRunSec = runMin.toIntOrNull()?.times(60) ?: rec.longestRunSec)))
+                Toast.makeText(ctx, "[SYSTEM] Run saved", Toast.LENGTH_SHORT).show()
             })
         }
 
@@ -197,64 +215,94 @@ private fun NumField(label: String, value: String, decimal: Boolean = true, onCh
 private fun Charts(data: AppData, today: LocalDate) {
     val days14 = (13 downTo 0).map { today.minusDays(it.toLong()) }
     val labels14 = days14.map { it.format(shortFmt) }
+    val recs = data.records.values
+    val sleepNights = recs.count { sleepMinutes(it) != null }
+    val bedNights = recs.count { it.bedTime != null }
+    val proteinDays = recs.count { it.protein != null }
+    val runSessions = recs.count { (it.runMinutes ?: 0) > 0 || (it.amounts["run"] ?: 0.0) > 0.0 }
+    val weighed = data.records.values.filter { it.weight != null }.sortedBy { it.date }.takeLast(30)
+    val trackedDays = (java.time.temporal.ChronoUnit.DAYS.between(data.settings.earliest, today) + 1).toInt().coerceAtLeast(0)
 
-    BarChart(
-        "Sleep · last 14 nights", "Hours slept. Gold line = 8 h target.",
-        labels14, days14.map { d -> sleepMinutes(data.records[d])?.let { it / 60f } },
-        format = { "%.1f h".format(it) }, target = 8f,
-    )
+    if (sleepNights >= 3) {
+        BarChart(
+            "Sleep · last 14 nights", "Hours slept. Gold line = 8 h target.",
+            labels14, days14.map { d -> sleepMinutes(data.records[d])?.let { it / 60f } },
+            format = { "%.1f h".format(it) }, target = 8f,
+        )
+    } else {
+        LockedChart("Sleep", sleepNights, 3, "nights logged")
+    }
 
-    LineChart(
-        "Bedtime · last 14 nights", "Lights-off time. Lower is earlier. Gold line = 11:00 PM.",
-        labels14, days14.map { d -> data.records[d]?.bedTime?.let { bedScale(LocalTime.parse(it)) } },
-        format = ::bedLabel, target = bedScale(LocalTime.of(23, 0)),
-    )
+    if (bedNights >= 3) {
+        LineChart(
+            "Bedtime · last 14 nights", "Lights-off time. Lower is earlier. Gold line = 11:00 PM.",
+            labels14, days14.map { d -> data.records[d]?.bedTime?.let { bedScale(LocalTime.parse(it)) } },
+            format = ::bedLabel, target = bedScale(LocalTime.of(23, 0)),
+        )
+    } else {
+        LockedChart("Bedtime", bedNights, 3, "nights logged")
+    }
 
-    BarChart(
-        "Protein · last 14 days", "1 = low · 2 = okay · 3 = good",
-        labels14, days14.map { d -> data.records[d]?.protein?.toFloat() },
-        format = { when (it.toInt()) { 1 -> "Low"; 2 -> "Okay"; else -> "Good" } },
-    )
+    if (proteinDays >= 3) {
+        BarChart(
+            "Protein · last 14 days", "1 = low · 2 = okay · 3 = good",
+            labels14, days14.map { d -> data.records[d]?.protein?.toFloat() },
+            format = { when (it.toInt()) { 1 -> "Low"; 2 -> "Okay"; else -> "Good" } },
+        )
+    } else {
+        LockedChart("Protein", proteinDays, 3, "days logged")
+    }
 
     val s = data.settings
     val weeks = Program.week(s, today)
     val weekNums = (1..weeks).toList()
     val runDays = generateSequence(s.earliest) { it.plusDays(1) }.takeWhile { it <= today }.toList()
-    BarChart(
-        "Running · minutes per week", "Total minutes actually run (not walking)",
-        weekNums.map { "W$it" },
-        weekNums.map { w ->
-            runDays.filter { Program.week(s, it) == w }.sumOf { data.records[it]?.runMinutes ?: 0 }.toFloat()
-        },
-        format = { "${it.toInt()} min" },
-    )
+    if (runSessions >= 2) {
+        BarChart(
+            "Running · minutes per week", "Total minutes actually run (not walking)",
+            weekNums.map { "W$it" },
+            weekNums.map { w ->
+                runDays.filter { Program.week(s, it) == w }.sumOf { data.records[it]?.runMinutes ?: 0 }.toFloat()
+            },
+            format = { "${it.toInt()} min" },
+        )
+    } else {
+        LockedChart("Running", runSessions, 2, "run sessions")
+    }
 
-    val weighed = data.records.values.filter { it.weight != null }.sortedBy { it.date }.takeLast(30)
-    LineChart(
-        "Weight", "Morning weigh-ins (last 30). Expect wiggles, watch the trend.",
-        weighed.map { it.date.format(shortFmt) }, weighed.map { it.weight!!.toFloat() },
-        format = { "%.1f kg".format(it) },
-    )
+    if (weighed.size >= 3) {
+        LineChart(
+            "Weight", "Morning weigh-ins (last 30). Expect wiggles, watch the trend.",
+            weighed.map { it.date.format(shortFmt) }, weighed.map { it.weight!!.toFloat() },
+            format = { "%.1f kg".format(it) },
+        )
+    } else {
+        LockedChart("Weight", weighed.size, 3, "weigh-ins")
+    }
 
     val gridStart = Program.weekStart(s.earliest)
     val cols = maxOf((java.time.temporal.ChronoUnit.DAYS.between(gridStart, today) / 7).toInt() + 1, 10)
-    Heatmap(
-        "Consistency", "Each square is a day (Sun → Sat, top to bottom). Brighter = more quests done.",
-        cols,
-        ratio = { w, d ->
-            val day = gridStart.plusDays(w * 7L + d)
-            if (day > today || day < s.earliest) null else Game.status(data, day).ratio
-        },
-        describe = { w, d ->
-            val day = gridStart.plusDays(w * 7L + d)
-            if (day > today) "${day.format(longFmt)} · upcoming"
-            else if (day < s.earliest) "${day.format(longFmt)} · before you started"
-            else {
-                val s = Game.status(data, day)
-                "${day.format(longFmt)} · ${s.doneCount}/${s.total} quests" + if (s.cleared) " · cleared" else ""
-            }
-        },
-    )
+    if (trackedDays >= 7) {
+        Heatmap(
+            "Consistency", "Each square is a day (Sun → Sat, top to bottom). Brighter = more quests done.",
+            cols,
+            ratio = { w, d ->
+                val day = gridStart.plusDays(w * 7L + d)
+                if (day > today || day < s.earliest) null else Game.status(data, day).ratio
+            },
+            describe = { w, d ->
+                val day = gridStart.plusDays(w * 7L + d)
+                if (day > today) "${day.format(longFmt)} · upcoming"
+                else if (day < s.earliest) "${day.format(longFmt)} · before you started"
+                else {
+                    val s = Game.status(data, day)
+                    "${day.format(longFmt)} · ${s.doneCount}/${s.total} quests" + if (s.cleared) " · cleared" else ""
+                }
+            },
+        )
+    } else {
+        LockedChart("Consistency", trackedDays, 7, "days tracked")
+    }
 }
 
 /** "Not today" reasons over the last 30 days, so patterns become visible. */
@@ -276,5 +324,22 @@ private fun SkipPatterns(data: AppData, today: LocalDate) {
             "Most skipped: " + top.joinToString(" · ") { "${names[it.key] ?: it.key} (${it.value})" },
             color = C.Muted, fontSize = 12.sp,
         )
+    }
+}
+
+/** A chart that hasn't unlocked yet: a chart with one or two dots says nothing. */
+@Composable
+private fun LockedChart(title: String, have: Int, need: Int, unit: String) {
+    Panel(accent = C.Border) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("🔒", fontSize = 18.sp)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text("$title chart", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text("Unlocks after $need $unit (${minOf(have, need)}/$need)", color = C.Muted, fontSize = 12.sp)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        XpBar(minOf(have, need).toFloat() / need, height = 4.dp)
     }
 }
