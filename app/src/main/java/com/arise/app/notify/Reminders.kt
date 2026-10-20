@@ -20,6 +20,7 @@ import com.arise.app.data.AppData
 import com.arise.app.data.Store
 import com.arise.app.game.Block
 import com.arise.app.game.Game
+import com.arise.app.game.Special
 import com.arise.app.widget.AriseWidget
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -100,22 +101,30 @@ object Reminders {
         val data = Store.load(ctx)
         val plan = Game.plan(data, date)
         val b = plan.blocks.firstOrNull { it.time == time && it.notify } ?: return
-        val done = data.day(date).done
+        val rec = data.records[date]
         val q = b.quest
-        if (q != null && done.containsKey(q.id)) return // already done, no nagging
+        if (q != null && Game.settled(q, rec)) return // already handled, no nagging
+        val name = data.settings.name
 
         val title: String
         val text: String
         when {
-            b.checkIn -> {
-                val left = plan.quests.filter { !done.containsKey(it.id) }
+            b.special == Special.CHECK_IN -> {
+                val left = plan.quests.filter { !Game.counts(it, rec) && rec?.skipped?.containsKey(it.id) != true }
                 if (left.isEmpty()) {
                     title = "[SYSTEM] All quests cleared"
-                    text = "Flawless. Rest well, ${data.settings.name}."
+                    text = "Flawless. Rest well, $name."
                 } else {
                     title = "[SYSTEM] ${left.size} quest${if (left.size == 1) "" else "s"} remain"
                     text = left.joinToString(" · ") { it.title }
                 }
+            }
+            b.special == Special.RESCUE -> {
+                // Only speak up if the morning slipped: 2+ morning quests still open.
+                val open = plan.blocks.filter { it.time < time && it.quest != null && !Game.settled(it.quest, rec) }
+                if (open.size < 2) return
+                title = "[SYSTEM] The day can still be cleared"
+                text = "Next quest: ${open.first().quest!!.title}. One card at a time, $name."
             }
             q != null -> {
                 title = "[SYSTEM] Quest: ${q.title}"

@@ -12,14 +12,19 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -64,24 +69,58 @@ fun AriseTheme(content: @Composable () -> Unit) {
             outline = C.Border,
             error = C.Danger,
         ),
-        content = content,
-    )
+    ) {
+        // A Surface sets the default text colour for everything inside, so no screen is black-on-black.
+        Surface(color = C.Bg, contentColor = C.Text) { content() }
+    }
 }
 
 @Composable
 fun Panel(
     modifier: Modifier = Modifier,
     accent: Color = C.Border,
+    glow: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val shape = RoundedCornerShape(12.dp)
     Column(
         modifier
             .fillMaxWidth()
+            .then(if (glow) Modifier.shadow(14.dp, shape, ambientColor = accent, spotColor = accent) else Modifier)
             .clip(shape)
             .background(Brush.verticalGradient(listOf(C.PanelHi, C.Panel)))
             .border(1.dp, accent, shape)
             .padding(14.dp),
+        content = content,
+    )
+}
+
+/** A System popup window: glowing border plus corner brackets. For the important things. */
+@Composable
+fun SystemWindow(
+    modifier: Modifier = Modifier,
+    accent: Color = C.Glow,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Panel(
+        modifier.drawWithContent {
+            drawContent()
+            val l = 14.dp.toPx()
+            val w = 2.dp.toPx()
+            val inset = 1.dp.toPx()
+            val (r, b) = size.width - inset to size.height - inset
+            listOf(
+                Offset(inset, inset) to Pair(Offset(l, 0f), Offset(0f, l)),
+                Offset(r, inset) to Pair(Offset(-l, 0f), Offset(0f, l)),
+                Offset(inset, b) to Pair(Offset(l, 0f), Offset(0f, -l)),
+                Offset(r, b) to Pair(Offset(-l, 0f), Offset(0f, -l)),
+            ).forEach { (p, d) ->
+                drawLine(accent, p, p + d.first, w, StrokeCap.Square)
+                drawLine(accent, p, p + d.second, w, StrokeCap.Square)
+            }
+        },
+        accent = accent.copy(alpha = 0.55f),
+        glow = true,
         content = content,
     )
 }
@@ -106,23 +145,24 @@ fun SysButton(
     selected: Boolean = false,
     enabled: Boolean = true,
     color: Color = C.Glow,
+    small: Boolean = false,
 ) {
     val shape = RoundedCornerShape(8.dp)
     val fg = when {
+        !enabled -> C.Muted.copy(alpha = 0.5f)
         selected -> C.Bg
-        enabled -> color
-        else -> C.Muted
+        else -> color
     }
     Box(
         modifier
             .clip(shape)
-            .background(if (selected) color else Color.Transparent)
-            .border(1.dp, if (enabled) color else C.Muted.copy(alpha = 0.4f), shape)
+            .background(if (selected && enabled) color else Color.Transparent)
+            .border(1.dp, if (enabled) color else C.Muted.copy(alpha = 0.25f), shape)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 9.dp),
+            .padding(horizontal = if (small) 9.dp else 12.dp, vertical = if (small) 6.dp else 9.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, color = fg, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, fontFamily = Mono)
+        Text(text, color = fg, fontSize = if (small) 12.sp else 13.sp, fontWeight = FontWeight.SemiBold, fontFamily = Mono)
     }
 }
 

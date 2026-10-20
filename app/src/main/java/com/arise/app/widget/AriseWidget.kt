@@ -28,6 +28,7 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.arise.app.MainActivity
 import com.arise.app.data.Store
+import com.arise.app.game.Deck
 import com.arise.app.game.Game
 import com.arise.app.game.fmt
 import java.time.LocalDate
@@ -50,13 +51,15 @@ private fun snapshot(ctx: Context): Snap {
     val now = LocalTime.now()
     val p = Game.progress(data, today)
     val s = Game.status(data, today)
-    val doneIds = data.day(today).done.keys
-    val next = s.plan.blocks.firstOrNull { it.time > now && (it.quest == null || it.quest.id !in doneIds) }
-    val nextText = if (next != null) {
-        "${fmt(next.time)} · ${next.quest?.title ?: next.title}"
-    } else {
-        val tomorrow = Game.plan(data, today.plusDays(1)).blocks.first()
-        "Tomorrow ${fmt(tomorrow.time)} · ${tomorrow.quest?.title ?: tomorrow.title}"
+    val deck = Deck.cards(data, today, now)
+    val next = Deck.upNext(data, today, now)
+    val nextText = when {
+        deck.isNotEmpty() -> "NOW · ${deck.first().quest?.title}" + if (deck.size > 1) "  (+${deck.size - 1})" else ""
+        next != null -> "${fmt(next.time)} · ${next.quest?.title ?: next.title}"
+        else -> {
+            val tomorrow = Game.plan(data, today.plusDays(1)).blocks.first()
+            "Tomorrow ${fmt(tomorrow.time)} · ${tomorrow.quest?.title ?: tomorrow.title}"
+        }
     }
     return Snap(
         level = p.level,
@@ -65,7 +68,7 @@ private fun snapshot(ctx: Context): Snap {
         total = s.total,
         streak = p.streak,
         next = nextText,
-        penalty = Game.penaltyActive(data, today) && !doneIds.contains(Game.penaltyQuest.id),
+        penalty = Game.penaltyActive(data, today) && data.day(today).done[Game.penaltyQuest.id] == null,
     )
 }
 
@@ -105,7 +108,7 @@ private fun WidgetBody(s: Snap) {
         }
         Spacer(GlanceModifier.height(8.dp))
         Text(
-            if (s.penalty) "PENALTY QUEST ACTIVE" else "NEXT",
+            if (s.penalty) "PENALTY QUEST ACTIVE" else "QUEST",
             style = TextStyle(color = ColorProvider(if (s.penalty) Danger else TextDim), fontSize = 10.sp, fontWeight = FontWeight.Bold),
         )
         Text(

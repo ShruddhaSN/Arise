@@ -21,7 +21,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -43,11 +42,13 @@ import java.time.format.TextStyle
 import java.util.Locale
 
 private val niceDate = DateTimeFormatter.ofPattern("EEEE, d MMM", Locale.ENGLISH)
+private val shortDate = DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH)
 private const val STEPS = 6
 
 /**
- * First launch: a short System "registration". Finishing it makes today Day 1.
- * With [editing], it skips the intro and start-date steps and keeps Day 1 and progress as they are.
+ * First launch: a short System "registration". Finishing it sets Day 1.
+ * With [editing], it skips the intro, keeps progress, and allows moving Day 1 once.
+ * All answers use rememberSaveable so they survive Android recreating the screen.
  */
 @Composable
 fun OnboardingScreen(
@@ -61,45 +62,52 @@ fun OnboardingScreen(
     val d = data.settings
     val firstStep = if (editing) 1 else 0
     var step by rememberSaveable { mutableIntStateOf(firstStep) }
-    var name by remember { mutableStateOf(d.playerName) }
-    var office by remember { mutableStateOf(d.officeDays) }
-    var wfh by remember { mutableStateOf(d.wfhDays) }
-    var wakeWork by remember { mutableStateOf(d.wakeWork) }
-    var wakeFree by remember { mutableStateOf(d.wakeFree) }
-    var paperSince by remember { mutableStateOf<LocalDate?>(null) }
-    var startTomorrow by remember { mutableStateOf(false) }
-    val day1 = if (startTomorrow) today.plusDays(1) else today
-    var goal by remember { mutableStateOf(d.goalWeight?.toString() ?: "") }
+    var name by rememberSaveable { mutableStateOf(d.playerName) }
+    var office by rememberSaveable { mutableStateOf(d.officeDays) }
+    var wfh by rememberSaveable { mutableStateOf(d.wfhDays) }
+    var wakeOffice by rememberSaveable { mutableStateOf(d.wakeOffice) }
+    var wakeWfh by rememberSaveable { mutableStateOf(d.wakeWfh) }
+    var wakeOff by rememberSaveable { mutableStateOf(d.wakeOff) }
+    var paperSince by rememberSaveable { mutableStateOf<LocalDate?>(null) }
+    var startTomorrow by rememberSaveable { mutableStateOf(false) }
+    var newDay1 by rememberSaveable { mutableStateOf<LocalDate?>(null) }
+    var goal by rememberSaveable { mutableStateOf(d.goalWeight?.toString() ?: "") }
+    var current by rememberSaveable { mutableStateOf("") }
+    val day1 = when {
+        editing -> newDay1 ?: d.start
+        startTomorrow -> today.plusDays(1)
+        else -> today
+    }
 
     fun pickTime(t: LocalTime, onPick: (LocalTime) -> Unit) {
         TimePickerDialog(ctx, { _, h, m -> onPick(LocalTime.of(h, m)) }, t.hour, t.minute, false).show()
     }
 
-    fun pickDate() {
-        val init = paperSince ?: today.minusDays(3)
-        DatePickerDialog(ctx, { _, y, m, day -> paperSince = LocalDate.of(y, m + 1, day) }, init.year, init.monthValue - 1, init.dayOfMonth)
+    fun pickDate(init: LocalDate, min: LocalDate, max: LocalDate, onPick: (LocalDate) -> Unit) {
+        DatePickerDialog(ctx, { _, y, m, day -> onPick(LocalDate.of(y, m + 1, day)) }, init.year, init.monthValue - 1, init.dayOfMonth)
             .apply {
-                datePicker.maxDate = today.minusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-                datePicker.minDate = today.minusDays(60).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                datePicker.minDate = min.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                datePicker.maxDate = max.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
             }
             .show()
     }
 
     fun finish() {
-        onUpdate(
-            data.copy(
-                settings = d.copy(
-                    playerName = name.trim(),
-                    startDate = if (editing) d.startDate else day1,
-                    backfillFrom = if (editing) d.backfillFrom else paperSince,
-                    officeDays = office,
-                    wfhDays = wfh,
-                    wakeWork = wakeWork,
-                    wakeFree = wakeFree,
-                    goalWeight = goal.replace(',', '.').toDoubleOrNull(),
-                ),
-            ),
+        val settings = d.copy(
+            playerName = name.trim(),
+            startDate = day1,
+            backfillFrom = if (editing) d.backfillFrom else paperSince,
+            officeDays = office,
+            wfhDays = wfh,
+            wakeOffice = wakeOffice,
+            wakeWfh = wakeWfh,
+            wakeOff = wakeOff,
+            goalWeight = goal.replace(',', '.').toDoubleOrNull(),
+            day1Changed = d.day1Changed || (editing && newDay1 != null && newDay1 != d.startDate),
         )
+        var next = data.copy(settings = settings)
+        current.replace(',', '.').toDoubleOrNull()?.let { w -> next = next.with(next.day(today).copy(weight = w)) }
+        onUpdate(next)
         onClose()
     }
 
@@ -111,18 +119,18 @@ fun OnboardingScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Spacer(Modifier.height(24.dp))
-        SysLabel(if (editing) "[System] Edit setup" else "[System] Player registration · ${step + 1}/$STEPS")
+        SysLabel(if (editing) "[System] Edit setup · ${step}/${STEPS - 1}" else "[System] Player registration · ${step + 1}/$STEPS")
         XpBar((step + 1f) / STEPS, height = 4.dp)
         Spacer(Modifier.height(8.dp))
 
         when (step) {
-            0 -> Panel(accent = C.Glow) {
+            0 -> SystemWindow {
                 Text("You have been chosen.", fontSize = 26.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "From today, the System gives you daily quests: sleep, movement, food, learning. " +
                         "Complete them to earn XP, level up and rank up from E to S.\n\n" +
-                        "Six quick questions and you're in. Everything stays on this phone.",
+                        "A few quick questions and you're in. Everything stays on this phone.",
                     color = C.Text2,
                 )
             }
@@ -151,11 +159,15 @@ fun OnboardingScreen(
                             day.getDisplayName(TextStyle.NARROW, Locale.ENGLISH),
                             selected = kind != 0,
                             color = color,
+                            small = true,
                             modifier = Modifier.weight(1f),
                             onClick = {
                                 when (kind) {
                                     0 -> office = office + day
-                                    1 -> { office = office - day; wfh = wfh + day }
+                                    1 -> {
+                                        office = office - day
+                                        wfh = wfh + day
+                                    }
                                     else -> wfh = wfh - day
                                 }
                             },
@@ -163,76 +175,103 @@ fun OnboardingScreen(
                     }
                 }
                 Spacer(Modifier.height(10.dp))
-                Text("Office: ${dayList(office)}", color = C.Glow, fontSize = 13.sp)
-                Text("WFH: ${dayList(wfh)}", color = C.Gold, fontSize = 13.sp)
-                Text("Days off: everything else", color = C.Muted, fontSize = 13.sp)
+                Text("🏢 Office: ${dayList(office)}", color = C.Glow, fontSize = 13.sp)
+                Text("🏠 WFH: ${dayList(wfh)}", color = C.Gold, fontSize = 13.sp)
+                Text("🌤 Days off: everything else", color = C.Muted, fontSize = 13.sp)
                 Spacer(Modifier.height(6.dp))
-                Text("You can change a single day anytime from the Today tab.", color = C.Muted, fontSize = 12.sp)
+                Text("For one-off changes (a WFH day, leave), use Player → Calendar.", color = C.Muted, fontSize = 12.sp)
             }
             3 -> Panel {
-                Text("When will you wake up?", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("Your wake-up goals", fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 Text(
-                    "Keep the two times within an hour of each other. A steady wake time is one of the best things you can do for your hormones and energy.",
+                    "Each morning you tap \"I'm up\" and the System scores how close you were. " +
+                        "Try to keep these within about an hour of each other: a steady body clock helps your hormones and energy.",
                     color = C.Text2, fontSize = 13.sp,
                 )
                 Spacer(Modifier.height(12.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Work days", modifier = Modifier.width(110.dp))
-                    SysButton(fmt(wakeWork), onClick = { pickTime(wakeWork) { wakeWork = it } })
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Days off", modifier = Modifier.width(110.dp))
-                    SysButton(fmt(wakeFree), onClick = { pickTime(wakeFree) { wakeFree = it } })
+                listOf(
+                    Triple("🏢 Office days", wakeOffice, { t: LocalTime -> wakeOffice = t }),
+                    Triple("🏠 WFH days", wakeWfh, { t: LocalTime -> wakeWfh = t }),
+                    Triple("🌤 Days off", wakeOff, { t: LocalTime -> wakeOff = t }),
+                ).forEach { (label, t, set) ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
+                        Text(label, modifier = Modifier.width(140.dp))
+                        SysButton(fmt(t), onClick = { pickTime(t, set) })
+                    }
                 }
             }
             4 -> Panel {
-                Text("When is Day 1?", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text("Setting up at night? Pick tomorrow, and your morning reminders will be ready.", color = C.Text2, fontSize = 13.sp)
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SysButton("Today", selected = !startTomorrow, onClick = { startTomorrow = false })
-                    SysButton("Tomorrow", selected = startTomorrow, onClick = { startTomorrow = true })
-                }
-                Spacer(Modifier.height(18.dp))
-                Text("Have you already started?", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    "If you've been following the plan on paper, pick the day you started. You'll be able to tick off those days " +
-                        "for XP and streaks. They never cause penalties.",
-                    color = C.Text2, fontSize = 13.sp,
-                )
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SysButton("No", selected = paperSince == null, onClick = { paperSince = null })
-                    SysButton(
-                        paperSince?.let { "Since ${it.format(DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH))}" } ?: "Yes, since…",
-                        selected = paperSince != null,
-                        onClick = { pickDate() },
+                if (!editing) {
+                    Text("When is Day 1?", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Text("Setting up at night? Pick tomorrow, and your morning reminders will be ready.", color = C.Text2, fontSize = 13.sp)
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SysButton("Today", selected = !startTomorrow, onClick = { startTomorrow = false })
+                        SysButton("Tomorrow", selected = startTomorrow, onClick = { startTomorrow = true })
+                    }
+                    Spacer(Modifier.height(18.dp))
+                    Text("Have you already started?", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "If you've been following the plan on paper, pick the day you started. You can tick off those days " +
+                            "for XP and streaks. They never cause penalties.",
+                        color = C.Text2, fontSize = 13.sp,
                     )
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SysButton("No", selected = paperSince == null, onClick = { paperSince = null })
+                        SysButton(
+                            paperSince?.let { "Since ${it.format(shortDate)}" } ?: "Yes, since…",
+                            selected = paperSince != null,
+                            onClick = { pickDate(paperSince ?: today.minusDays(3), today.minusDays(60), today.minusDays(1)) { paperSince = it } },
+                        )
+                    }
+                } else {
+                    Text("Day 1", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Text("Currently: ${day1.format(niceDate)}", color = C.Text2, fontSize = 13.sp)
+                    Spacer(Modifier.height(10.dp))
+                    if (d.day1Changed) {
+                        Text("🔒 Day 1 is locked. You already moved it once. Your journey has begun.", color = C.Muted, fontSize = 13.sp)
+                    } else {
+                        Text(
+                            "You can move Day 1 once. Weeks and the plan count from it. Your history stays.",
+                            color = C.Muted, fontSize = 12.sp,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        SysButton(
+                            if (newDay1 != null) "New Day 1: ${newDay1!!.format(shortDate)}" else "Change Day 1 (once only)",
+                            color = C.Gold,
+                            selected = newDay1 != null,
+                            onClick = { pickDate(day1, today.minusDays(30), today.plusDays(7)) { newDay1 = it } },
+                        )
+                    }
                 }
             }
-            else -> Panel(accent = C.Gold) {
-                Text("Last one: your goal", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text("Optional. Your first weigh-in is a Day 1 quest.", color = C.Text2, fontSize = 13.sp)
+            else -> SystemWindow(accent = C.Gold) {
+                Text(if (editing) "Your goal" else "Last one: your body", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("Both optional. Weigh-ins are weekly quests after this.", color = C.Text2, fontSize = 13.sp)
                 Spacer(Modifier.height(8.dp))
+                if (!editing) {
+                    Field("Current weight (kg)", current, KeyboardType.Decimal) { current = it }
+                    Spacer(Modifier.height(6.dp))
+                }
                 Field("Goal weight (kg)", goal, KeyboardType.Decimal) { goal = it }
                 Spacer(Modifier.height(14.dp))
                 SysLabel("Summary", C.Gold)
-                Text("Day 1: ${(if (editing) d.start else day1).format(niceDate)}", color = C.Text2, fontSize = 13.sp)
-                if (!editing) paperSince?.let { Text("Fill-in days: ${it.format(niceDate)} → yesterday", color = C.Text2, fontSize = 13.sp) }
+                Text("Day 1: ${day1.format(niceDate)}", color = C.Text2, fontSize = 13.sp)
+                if (!editing) paperSince?.let { Text("Fill-in days: ${it.format(niceDate)} → before Day 1", color = C.Text2, fontSize = 13.sp) }
                 Text("Office ${dayList(office)} · WFH ${dayList(wfh)}", color = C.Text2, fontSize = 13.sp)
-                Text("Wake ${fmt(wakeWork)} (work) / ${fmt(wakeFree)} (off)", color = C.Text2, fontSize = 13.sp)
-                Text(if (editing) "Your Day 1, XP and history stay as they are." else "Penalties start after Day 1.", color = C.Muted, fontSize = 12.sp)
+                Text("Wake goals: ${fmt(wakeOffice)} office · ${fmt(wakeWfh)} WFH · ${fmt(wakeOff)} off", color = C.Text2, fontSize = 13.sp)
+                Text(if (editing) "Your XP and history stay as they are." else "Penalties start after Day 1.", color = C.Muted, fontSize = 12.sp)
             }
         }
 
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (step > firstStep) SysButton("‹ Back", onClick = { step = if (editing && step == 5) 3 else step - 1 })
+            if (step > firstStep) SysButton("‹ Back", onClick = { step-- })
             if (editing) SysButton("Cancel", color = C.Muted, onClick = onClose)
             Spacer(Modifier.weight(1f))
             if (step < STEPS - 1) {
-                SysButton("Next ›", selected = true, onClick = { step = if (editing && step == 3) 5 else step + 1 })
+                SysButton("Next ›", selected = true, onClick = { step++ })
             } else {
                 SysButton(if (editing) "SAVE" else "ARISE", selected = true, color = C.Gold, onClick = { finish() })
             }
@@ -258,6 +297,8 @@ private fun Field(label: String, value: String, type: KeyboardType = KeyboardTyp
             focusedLabelColor = C.Glow,
             unfocusedLabelColor = C.Muted,
             cursorColor = C.Glow,
+            focusedTextColor = C.Text,
+            unfocusedTextColor = C.Text,
         ),
         modifier = Modifier.fillMaxWidth(),
     )

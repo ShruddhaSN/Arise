@@ -61,6 +61,12 @@ app/src/main/java/com/arise/app/
   ui/                    screens and charts
 ```
 
+## v1.1 changes
+Card deck Today screen (Done / Later / Not today), all-day box (water, steps, Korean), partial XP for measurable quests,
+wake goals per day type with "I'm up", lesson curriculum with smart shuffle, Korean + sign language tracks, calendar for one-off day types,
+sick days, one-time Day 1 change, guided mobility/stretch timers, plank hold timer, protein log, skip patterns,
+spotlight tutorial, full-screen level-up, zig-zag level pacing (max ~3.5 weeks per level), rescue-the-day reminder.
+
 ## Roadmap (v2)
 - Health Connect sync: steps and sleep from Samsung Health or your watch
 - Quest editor inside the app

@@ -23,6 +23,12 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -38,8 +44,17 @@ import com.arise.app.game.Progress
 import java.time.LocalDate
 
 @Composable
-fun PlayerScreen(data: AppData, today: LocalDate, p: Progress, onUpdate: (AppData) -> Unit, onEditSetup: () -> Unit) {
+fun PlayerScreen(
+    data: AppData,
+    today: LocalDate,
+    p: Progress,
+    onUpdate: (AppData) -> Unit,
+    onEditSetup: () -> Unit,
+    onCalendar: () -> Unit,
+    onTutorial: () -> Unit,
+) {
     val ctx = LocalContext.current
+    var claiming by remember { mutableStateOf<com.arise.app.game.Boss?>(null) }
     val exportFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) {
             runCatching {
@@ -96,7 +111,7 @@ fun PlayerScreen(data: AppData, today: LocalDate, p: Progress, onUpdate: (AppDat
         Panel {
             SysLabel("Stats")
             Spacer(Modifier.height(6.dp))
-            Stat.entries.forEach { s -> StatRow(s.label, s.full, p.stats.getValue(s)) }
+            Stat.entries.forEach { s -> StatRow("${s.icon} ${s.label}", s.full, p.stats.getValue(s)) }
             StatRow("DSC", "Discipline · days cleared", p.discipline)
         }
 
@@ -121,9 +136,28 @@ fun PlayerScreen(data: AppData, today: LocalDate, p: Progress, onUpdate: (AppDat
                         Text(b.name, fontWeight = FontWeight.SemiBold, color = if (cleared) C.Gold else C.Text)
                         Text(b.goal, color = C.Muted, fontSize = 12.sp)
                     }
-                    Text(if (cleared) "CLEARED" else "+${b.xp} XP", color = if (cleared) C.Good else C.Glow, fontFamily = Mono, fontSize = 11.sp)
+                    if (b.claim && !cleared) {
+                        SysButton("I did it", small = true, color = C.Gold, onClick = { claiming = b })
+                    } else {
+                        Text(if (cleared) "CLEARED" else "+${b.xp} XP", color = if (cleared) C.Good else C.Glow, fontFamily = Mono, fontSize = 11.sp)
+                    }
                 }
             }
+            if ("kr_topik" in data.settings.claimedBosses) {
+                Spacer(Modifier.height(8.dp))
+                SystemWindow(accent = C.Gold) {
+                    SysLabel("[System] Hidden gate opened", C.Gold)
+                    Text("A new language gate has opened. Choose: 🇯🇵 Japanese or 🇨🇳 Chinese. Tell your coach which one.", color = C.Text2, fontSize = 13.sp)
+                }
+            }
+        }
+
+        Panel {
+            SysLabel("Plan")
+            Spacer(Modifier.height(6.dp))
+            SysButton("📅 Calendar: mark WFH, leave or sick days", onClick = onCalendar, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+            SysButton("🎓 Replay the tutorial", onClick = onTutorial, modifier = Modifier.fillMaxWidth(), color = C.Muted)
         }
 
         Panel {
@@ -155,20 +189,35 @@ fun PlayerScreen(data: AppData, today: LocalDate, p: Progress, onUpdate: (AppDat
         }
 
         Panel {
-            SysLabel("Redmi / MIUI setup", C.Gold)
+            SysLabel("Samsung setup (for reliable reminders)", C.Gold)
             Spacer(Modifier.height(4.dp))
             Text(
-                "MIUI kills background apps, which stops reminders. Long-press the Arise icon → App info, then:\n" +
-                    "• Autostart: ON\n" +
-                    "• Battery saver: No restrictions\n" +
-                    "• Notifications: allow all, including lock screen and floating\n" +
-                    "Then add the widget: long-press the home screen → Widgets → Arise.",
+                "Samsung can put apps to sleep, which delays reminders. Once:\n" +
+                    "• Settings → Battery → Background usage limits → Never sleeping apps → add Arise\n" +
+                    "• Long-press the Arise icon → App info → Notifications: allow all\n" +
+                    "• Add the widget: long-press the home screen → Widgets → Arise",
                 color = C.Text2, fontSize = 13.sp,
             )
         }
         Spacer(Modifier.height(24.dp))
     }
 
+
+    claiming?.let { b ->
+        AlertDialog(
+            onDismissRequest = { claiming = null },
+            containerColor = C.Panel,
+            title = { Text(b.name) },
+            text = { Text("${b.goal}\n\nHonestly done? The System trusts you.", color = C.Text2) },
+            confirmButton = {
+                TextButton(onClick = {
+                    onUpdate(data.copy(settings = data.settings.copy(claimedBosses = data.settings.claimedBosses + b.id)))
+                    claiming = null
+                }) { Text("Yes, I did it", color = C.Gold) }
+            },
+            dismissButton = { TextButton(onClick = { claiming = null }) { Text("Not yet", color = C.Muted) } },
+        )
+    }
 }
 
 @Composable

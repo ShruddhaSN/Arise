@@ -45,7 +45,7 @@ private val longFmt = DateTimeFormatter.ofPattern("EEE, d MMM", Locale.ENGLISH)
 /** Minutes slept, from last night's bed time to this morning's wake time. */
 private fun sleepMinutes(r: DayRecord?): Int? {
     val b = r?.bedTime?.let(LocalTime::parse) ?: return null
-    val w = r.wakeTime?.let(LocalTime::parse) ?: return null
+    val w = r?.wakeTime?.let(LocalTime::parse) ?: return null
     var mins = w.toSecondOfDay() / 60 - b.toSecondOfDay() / 60
     if (mins <= 0) mins += 24 * 60
     return mins
@@ -125,6 +125,22 @@ fun LogScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Unit) {
         }
 
         Panel {
+            SysLabel("Protein today")
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(1 to "Low", 2 to "Okay", 3 to "Good").forEach { (v, label) ->
+                    SysButton(
+                        label,
+                        onClick = { onUpdate(data.with(rec.copy(protein = if (rec.protein == v) null else v))) },
+                        selected = rec.protein == v,
+                        color = C.Gold,
+                    )
+                }
+            }
+            Text("A rough feel is enough: eggs, dal, paneer, curd, chana, chicken. No counting.", color = C.Muted, fontSize = 11.sp)
+        }
+
+        Panel {
             SysLabel("Body & activity")
             Spacer(Modifier.height(4.dp))
             NumField("Weight (kg), weekly, morning after the bathroom", weight) { weight = it }
@@ -142,7 +158,7 @@ fun LogScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Unit) {
                             done = done,
                             weight = w,
                             waist = waist.replace(',', '.').toDoubleOrNull(),
-                            steps = steps.toIntOrNull(),
+                            amounts = steps.toIntOrNull()?.let { rec.amounts + ("steps" to it.toDouble()) } ?: (rec.amounts - "steps"),
                             longestRunSec = runMin.toIntOrNull()?.times(60) ?: rec.longestRunSec,
                         ),
                     ),
@@ -153,6 +169,7 @@ fun LogScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Unit) {
 
         SysLabel("Trends")
         Charts(data, today)
+        SkipPatterns(data, today)
         Spacer(Modifier.height(24.dp))
     }
 }
@@ -191,6 +208,12 @@ private fun Charts(data: AppData, today: LocalDate) {
         "Bedtime · last 14 nights", "Lights-off time. Lower is earlier. Gold line = 11:00 PM.",
         labels14, days14.map { d -> data.records[d]?.bedTime?.let { bedScale(LocalTime.parse(it)) } },
         format = ::bedLabel, target = bedScale(LocalTime.of(23, 0)),
+    )
+
+    BarChart(
+        "Protein · last 14 days", "1 = low · 2 = okay · 3 = good",
+        labels14, days14.map { d -> data.records[d]?.protein?.toFloat() },
+        format = { when (it.toInt()) { 1 -> "Low"; 2 -> "Okay"; else -> "Good" } },
     )
 
     val s = data.settings
@@ -232,4 +255,26 @@ private fun Charts(data: AppData, today: LocalDate) {
             }
         },
     )
+}
+
+/** "Not today" reasons over the last 30 days, so patterns become visible. */
+@Composable
+private fun SkipPatterns(data: AppData, today: LocalDate) {
+    val from = today.minusDays(30)
+    val skips = data.records.values.filter { it.date > from }.flatMap { r -> r.skipped.map { it.key to it.value } }
+    if (skips.isEmpty()) return
+    Panel {
+        SysLabel("Skip patterns · 30 days")
+        Spacer(Modifier.height(6.dp))
+        skips.groupingBy { it.second }.eachCount().entries.sortedByDescending { it.value }.forEach { (reason, n) ->
+            Text("${reason.icon} ${reason.label}: $n", color = C.Text2, fontSize = 13.sp)
+        }
+        Spacer(Modifier.height(6.dp))
+        val names = Game.plan(data, today).quests.associate { it.id to it.title }
+        val top = skips.groupingBy { it.first }.eachCount().entries.sortedByDescending { it.value }.take(3)
+        Text(
+            "Most skipped: " + top.joinToString(" · ") { "${names[it.key] ?: it.key} (${it.value})" },
+            color = C.Muted, fontSize = 12.sp,
+        )
+    }
 }
