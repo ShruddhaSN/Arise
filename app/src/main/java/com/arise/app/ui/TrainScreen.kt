@@ -3,7 +3,6 @@ package com.arise.app.ui
 import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -36,28 +35,38 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.arise.app.data.AppData
+import com.arise.app.data.DayRecord
 import com.arise.app.data.Done
+import com.arise.app.data.ExSkip
+import com.arise.app.data.ExSkipLog
+import com.arise.app.game.Challenges
 import com.arise.app.game.Exercise
+import com.arise.app.game.Exercises
 import com.arise.app.game.Game
 import com.arise.app.game.Kind
+import com.arise.app.game.Prescribed
 import com.arise.app.game.Program
+import com.arise.app.game.Profile
 import com.arise.app.game.RunPlan
 import com.arise.app.game.SegKind
 import com.arise.app.game.dur
 import com.arise.app.notify.CoachCues
 import kotlinx.coroutines.delay
+import java.net.URLEncoder
 import java.time.LocalDate
 import java.util.Locale
 
-/** One timed step of a session: run segments, flow moves, or a "get ready" gap. */
+/** One timed step of a session: run segments, flow moves, strength sets, rests, "get ready" gaps. */
 private data class Step(
     val label: String,
     val sub: String,
@@ -65,37 +74,123 @@ private data class Step(
     val hot: Boolean,
     val prep: Boolean = false,
     val seg: SegKind? = null,
+    /** Strength: reps to count out loud, one every [tempo] seconds. 0 = a timed hold or segment. */
+    val reps: Int = 0,
+    val tempo: Int = 3,
+    /** What the System voice says as the step starts. */
+    val say: String = "",
+    val moveId: String? = null,
+    /** Steps of one exercise share a group: skipping skips the whole exercise. */
+    val group: Int = -1,
+    /** Finishing this step completes one set. */
+    val countsSet: Boolean = false,
+    val demo: String? = null,
+    /** Skipping this asks why. Rests and "get ready" just skip. */
+    val askSkip: Boolean = false,
 )
 
-/** Where a session ended: how far in, and whether it ran to the end. */
-private data class SessionEnd(val elapsedMs: Long, val finished: Boolean)
+/** Where a session ended: how far in, whether it ran to the end, and which steps were skipped. */
+private data class SessionEnd(val elapsedMs: Long, val finished: Boolean, val skipped: Set<Int>)
 
 private const val PREP_SEC = 5
 
+private fun demoUrl(name: String): String =
+    "https://www.youtube.com/results?search_query=" + URLEncoder.encode("$name how to do it properly", "UTF-8")
+
 /** Mobility/stretch flows as a continuous timeline, with a short "get ready" gap between moves. */
 private fun flowSteps(flow: List<Exercise>): List<Step> {
-    val moves = flow.flatMap { ex ->
-        if (ex.perSide) listOf(Step("${ex.name} · left", ex.cue, ex.sec, true), Step("${ex.name} · right", ex.cue, ex.sec, true))
-        else listOf(Step(ex.name, ex.cue, ex.sec, true))
+    var g = 0
+    return flow.flatMap { ex ->
+        val group = g++
+        val sides = if (ex.perSide) listOf(" · left", " · right") else listOf("")
+        sides.flatMap { side ->
+            val label = ex.name + side
+            listOf(
+                Step("GET READY", "Next: $label", PREP_SEC, false, prep = true, say = "Next: $label. ${ex.cue}", group = group),
+                Step(label, ex.cue, ex.sec, true, say = "Begin.", group = group, demo = demoUrl(ex.name + " stretch"), askSkip = true),
+            )
+        }
     }
-    return moves.flatMap { s -> listOf(Step("GET READY", "Next: ${s.label}", PREP_SEC, false, prep = true), s) }
 }
 
-private fun runSteps(plan: RunPlan): List<Step> = plan.segments.map { s ->
+/** "90" → "1 minute 30 seconds", for the voice. */
+private fun spoken(sec: Int): String {
+    val m = sec / 60
+    val r = sec % 60
+    val mins = if (m == 1) "1 minute" else "$m minutes"
+    return when {
+        m == 0 -> "$r seconds"
+        r == 0 -> mins
+        else -> "$mins $r seconds"
+    }
+}
+
+private fun runSteps(plan: RunPlan): List<Step> = plan.segments.mapIndexed { i, s ->
     Step(
         s.kind.label,
         if (s.kind == SegKind.RUN) "Easy jog. You should still be able to talk." else "Brisk walk, breathe.",
         s.sec, s.kind == SegKind.RUN, seg = s.kind,
+        say = when (s.kind) {
+            SegKind.WARMUP -> "Warm up walk. ${spoken(s.sec)}."
+            SegKind.RUN -> "Run. ${spoken(s.sec)}. Easy pace."
+            SegKind.WALK -> "Walk. Breathe."
+            SegKind.COOLDOWN -> "Cool down walk. You did it."
+        },
+        group = i, askSkip = s.kind == SegKind.RUN,
     )
 }
 
-/** Seconds of each step that were actually done by [elapsedMs]. */
-private fun doneSecs(steps: List<Step>, elapsedMs: Long): List<Int> {
+/** A full strength session: explain, then set by set with counted reps and timed rests. */
+private fun strengthSteps(list: List<Prescribed>): List<Step> = buildList {
+    list.forEachIndexed { gi, p ->
+        val m = p.move
+        val amount = if (p.hold > 0) "${p.hold} seconds" else "${p.reps}"
+        add(
+            Step(
+                "GET READY", "Next: ${m.name} · ${p.dose}", 15, false, prep = true,
+                say = "Next: ${m.name}. ${p.sets} sets of $amount${if (m.perSide) " each side" else ""}. ${m.how}",
+                moveId = m.id, group = gi, demo = m.demoUrl,
+            ),
+        )
+        for (set in 1..p.sets) {
+            val sides = if (m.perSide) listOf("left", "right") else listOf<String?>(null)
+            sides.forEachIndexed { si, side ->
+                val secs = if (p.hold > 0) p.hold else p.reps * m.tempo
+                add(
+                    Step(
+                        m.name + (side?.let { " · $it" } ?: ""),
+                        "Set $set of ${p.sets} · " + (if (p.hold > 0) "${p.hold}s hold" else "${p.reps} reps") + "\n${m.cue}",
+                        secs, true,
+                        reps = if (p.hold > 0) 0 else p.reps, tempo = m.tempo,
+                        say = (if (si == 0) "Set $set. " else "") + (side?.let { "$it side. " } ?: "") + "Go.",
+                        moveId = m.id, group = gi, countsSet = si == sides.lastIndex, demo = m.demoUrl, askSkip = true,
+                    ),
+                )
+                if (side != null && si == 0) {
+                    add(Step("SWITCH SIDES", "Other side next", 5, false, prep = true, say = "Switch sides.", group = gi))
+                }
+            }
+            val last = set == p.sets && gi == list.lastIndex
+            if (!last) {
+                val rest = if (set == p.sets) 45 else 60
+                add(
+                    Step(
+                        "REST", if (set == p.sets) "Next exercise coming up" else "Set ${set + 1} next. Shake it out, breathe.",
+                        rest, false, say = "Rest. $rest seconds.", group = gi,
+                    ),
+                )
+            }
+        }
+    }
+}
+
+/** Seconds of each step that were actually done by [end]. Skipped steps count as zero. */
+private fun doneSecs(steps: List<Step>, end: SessionEnd): List<Int> {
     var t = 0L
-    return steps.map { s ->
+    return steps.mapIndexed { i, s ->
         val start = t
         t += s.sec * 1000L
-        (((elapsedMs - start).coerceIn(0L, s.sec * 1000L)) / 1000L).toInt()
+        if (i in end.skipped) 0 else (((end.elapsedMs - start).coerceIn(0L, s.sec * 1000L)) / 1000L).toInt()
     }
 }
 
@@ -112,6 +207,7 @@ fun TrainScreen(
     onAutoFlowConsumed: () -> Unit,
 ) {
     val ctx = LocalContext.current
+    val uri = LocalUriHandler.current
     val s = data.settings
     val week = Program.week(s, today)
     val level = Game.runLevel(data, today)
@@ -119,9 +215,11 @@ fun TrainScreen(
     val plan = Program.runPlan(runWeek)
     val todaysQuests = Game.plan(data, today).quests
     val fullThisWeek = Game.fullRunsInWeek(data, week, level)
-    var running by remember { mutableStateOf<String?>(null) } // "run", "mobility", "stretch"
+    val strength = Exercises.session(s, today, week)
+    val bodyTaken = s.challenges.firstOrNull { it.kind == com.arise.app.data.ChallengeKind.BODY && Challenges.running(it, today) }
+    val bodyList = bodyTaken?.let { Challenges.bodyToday(s, it, today) }.orEmpty()
+    var running by remember { mutableStateOf<String?>(null) } // "run", "strength", "mobility", "stretch"
     var runEnd by remember { mutableStateOf<SessionEnd?>(null) }
-    var hold by remember { mutableStateOf<Exercise?>(null) }
 
     LaunchedEffect(autoFlow) {
         if (autoFlow != null) {
@@ -131,7 +229,7 @@ fun TrainScreen(
     }
 
     /** Applies an amount quest at [value] (keeping the higher), or a check quest as done. */
-    fun withQuest(id: String, value: Double?, extra: (com.arise.app.data.DayRecord) -> com.arise.app.data.DayRecord = { it }): AppData {
+    fun withQuest(id: String, value: Double?, extra: (DayRecord) -> DayRecord = { it }): AppData {
         val q = todaysQuests.firstOrNull { it.id == id }
         var rec = data.day(today)
         if (q != null) {
@@ -160,10 +258,26 @@ fun TrainScreen(
         toast(id)
     }
 
+    /** Every skip is saved right away: the reason, and what the System changes because of it. */
+    fun recordSkip(step: Step, reason: ExSkip) {
+        val name = step.moveId?.let { Exercises.byId(it)?.name } ?: step.label.substringBefore(" · ")
+        val rec = data.day(today)
+        var settings = data.settings
+        if (step.moveId != null) {
+            when (reason) {
+                ExSkip.TOO_HARD -> settings = settings.copy(easier = settings.easier + step.moveId)
+                ExSkip.PAIN -> settings = settings.copy(avoid = settings.avoid + step.moveId)
+                else -> Unit
+            }
+        }
+        onUpdate(data.with(rec.copy(exSkips = rec.exSkips + ExSkipLog(name, reason))).copy(settings = settings))
+        if (reason == ExSkip.CONFUSED) step.demo?.let { runCatching { uri.openUri(it) } }
+    }
+
     runEnd?.let { end ->
         RunSummary(plan, end, s.walkSpeed, s.runSpeed, s.incline, onSave = { walk, runS, inc, tSteps, tKm ->
             val steps = runSteps(plan)
-            val secs = doneSecs(steps, end.elapsedMs)
+            val secs = doneSecs(steps, end)
             val runsDone = steps.indices.count { steps[it].seg == SegKind.RUN && secs[it] >= steps[it].sec }
             val runSecDone = steps.indices.filter { steps[it].seg == SegKind.RUN }.sumOf { secs[it] }
             val longest = steps.indices.filter { steps[it].seg == SegKind.RUN && secs[it] >= steps[it].sec }.maxOfOrNull { steps[it].sec } ?: 0
@@ -192,7 +306,7 @@ fun TrainScreen(
             TimedSession(
                 "Run coach · ${plan.title}", runSteps(plan), C.RunHot,
                 guide = { st ->
-                    st.seg?.let { k ->
+                    st.seg?.takeIf { Profile.hasTreadmill(s) }?.let { k ->
                         val last = when (k) {
                             SegKind.RUN -> s.runSpeed
                             SegKind.COOLDOWN -> null
@@ -201,12 +315,77 @@ fun TrainScreen(
                         Program.treadmillGuide(k) + (last?.let { " · last time ${km(it)}" } ?: "") + "\nor whatever feels comfortable"
                     }
                 },
+                onSkip = { st, r -> recordSkip(st, r) },
                 onEnd = { end ->
                     running = null
                     runEnd = end
                 },
             )
             return
+        }
+        "strength" -> {
+            val steps = strengthSteps(strength)
+            TimedSession(
+                "Strength · ${strength.size} moves", steps, C.Gold,
+                guide = { null },
+                onSkip = { st, r -> recordSkip(st, r) },
+                onEnd = { end ->
+                    running = null
+                    val secs = doneSecs(steps, end)
+                    val sets = steps.indices.count { steps[it].countsSet && secs[it] >= steps[it].sec }
+                    val total = Exercises.totalSets(strength)
+                    if (sets > 0) onUpdate(withQuest("strength", sets.toDouble()))
+                    val skips = data.day(today).exSkips
+                    SystemBus.post(
+                        SysMsg(
+                            if (sets >= total) "STRENGTH QUEST COMPLETE" else "SESSION SAVED",
+                            buildList {
+                                add("Sets completed: $sets of $total")
+                                if (end.skipped.isNotEmpty()) {
+                                    add("Skipped today: ${skips.size} · " + skips.groupingBy { it.reason }.eachCount().entries.joinToString(", ") { "${it.key.label.lowercase()} ×${it.value}" })
+                                }
+                                skips.filter { it.reason == ExSkip.TOO_HARD }.map { it.exercise }.distinct().forEach {
+                                    add("$it was too hard: next session gets an easier version.")
+                                }
+                                skips.filter { it.reason == ExSkip.PAIN }.map { it.exercise }.distinct().forEach {
+                                    add("$it is removed from your plan. If pain keeps coming back, see a doctor or physio.")
+                                }
+                                if (sets >= total && end.skipped.isEmpty()) add("Not one set skipped. The System noticed.")
+                            },
+                            accent = C.Gold, speak = if (sets >= total) "Strength quest complete." else "Session saved.",
+                        ),
+                    )
+                },
+            )
+            return
+        }
+        "challenge" -> {
+            val t = bodyTaken
+            if (t != null && bodyList.isNotEmpty()) {
+                val steps = strengthSteps(bodyList)
+                val qid = Challenges.questId(t)
+                TimedSession(
+                    Challenges.title(t), steps, C.RunHot,
+                    guide = { null },
+                    onSkip = { st, r -> recordSkip(st, r) },
+                    onEnd = { end ->
+                        running = null
+                        val secs = doneSecs(steps, end)
+                        val sets = steps.indices.count { steps[it].countsSet && secs[it] >= steps[it].sec }
+                        if (sets > 0) onUpdate(withQuest(qid, sets.toDouble()))
+                        val total = Exercises.totalSets(bodyList)
+                        SystemBus.post(
+                            SysMsg(
+                                if (sets >= total) "CHALLENGE DAY CLEARED" else "SESSION SAVED",
+                                listOf("Sets: $sets of $total", "Day ${Challenges.day(t, today)} of ${Challenges.length(t)}."),
+                                accent = C.RunHot, speak = if (sets >= total) "Challenge day cleared." else "Session saved.",
+                            ),
+                        )
+                    },
+                )
+                return
+            }
+            running = null
         }
         "mobility", "stretch" -> {
             val id = running!!
@@ -215,11 +394,12 @@ fun TrainScreen(
             TimedSession(
                 if (id == "mobility") "Morning mobility" else "Evening stretch", steps, C.Glow,
                 guide = { null },
+                onSkip = { st, r -> recordSkip(st, r) },
                 onEnd = { end ->
                     running = null
-                    val secs = doneSecs(steps, end.elapsedMs)
+                    val secs = doneSecs(steps, end)
                     val minutes = steps.indices.filter { !steps[it].prep }.sumOf { secs[it] } / 60
-                    if (end.finished) saveQuest(id, null) else if (minutes > 0) saveQuest(id, minutes.toDouble())
+                    if (end.finished && end.skipped.isEmpty()) saveQuest(id, null) else if (minutes > 0) saveQuest(id, minutes.toDouble())
                 },
             )
             return
@@ -235,8 +415,8 @@ fun TrainScreen(
     ) {
         SysLabel("[System] Training ground")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Run", "Strength", "Mobility").forEachIndexed { i, label ->
-                SysButton(label, onClick = { onTargetChange(i) }, selected = target == i)
+            (listOf("Run", "Strength", "Mobility") + if (bodyTaken != null) listOf("Challenge") else emptyList()).forEachIndexed { i, label ->
+                SysButton(label, onClick = { onTargetChange(i) }, selected = target == i, small = true)
             }
         }
         when (target) {
@@ -246,7 +426,7 @@ fun TrainScreen(
                     Spacer(Modifier.height(4.dp))
                     Text(plan.title, fontSize = 24.sp, fontWeight = FontWeight.Bold)
                     Text(plan.summary, color = C.Text2, fontSize = 13.sp)
-                    Text("Total ${plan.totalSec / 60} min", color = C.Muted, fontSize = 12.sp)
+                    Text("Total ${plan.totalSec / 60} min · the voice coach calls every change", color = C.Muted, fontSize = 12.sp)
                     Spacer(Modifier.height(8.dp))
                     Text(
                         "Full runs this week: $fullThisWeek/${Game.FULL_RUNS_TO_LEVEL}" +
@@ -274,7 +454,7 @@ fun TrainScreen(
                     SysButton("▶  START SESSION", onClick = { running = "run" }, selected = true, modifier = Modifier.fillMaxWidth())
                 }
                 Panel {
-                    SysLabel("Segments · treadmill guide")
+                    SysLabel(if (Profile.hasTreadmill(s)) "Segments · treadmill guide" else "Segments")
                     plan.segments.forEach { seg ->
                         Row(Modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(
@@ -282,7 +462,7 @@ fun TrainScreen(
                                 fontFamily = Mono, fontSize = 12.sp, modifier = Modifier.width(130.dp),
                             )
                             Text(dur(seg.sec), color = C.Text2, fontSize = 12.sp, modifier = Modifier.width(56.dp))
-                            Text(Program.treadmillGuide(seg.kind), color = C.Muted, fontSize = 11.sp)
+                            if (Profile.hasTreadmill(s)) Text(Program.treadmillGuide(seg.kind), color = C.Muted, fontSize = 11.sp)
                         }
                     }
                     Spacer(Modifier.height(4.dp))
@@ -290,21 +470,103 @@ fun TrainScreen(
                 }
             }
             TrainTarget.STRENGTH -> {
-                ExerciseChecklist(
-                    "Strength · week $week", Program.strengthPlan(week), Program.STRENGTH_NOTE, "Complete session",
-                    onHold = { hold = it },
-                ) { saveQuest("strength", null) }
+                StrengthCard(
+                    week, strength, data.day(today).exSkips.size,
+                    showSpot = Profile.wantsFatLoss(s),
+                    onStart = { running = "strength" },
+                    onDone = { saveQuest("strength", null) },
+                    onDemo = { runCatching { uri.openUri(it) } },
+                )
+            }
+            TrainTarget.CHALLENGE -> {
+                val t = bodyTaken
+                val b = t?.let { Challenges.bodyById(it.id) }
+                if (t == null || b == null) {
+                    Text("No body challenge running. Tools → Challenges to take one.", color = C.Muted)
+                } else {
+                    SystemWindow(accent = C.RunHot) {
+                        SysLabel("Body challenge · day ${Challenges.day(t, today)}/${b.days}", C.RunHot)
+                        Text(b.title, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text("${bodyList.size} moves · ${Exercises.totalSets(bodyList)} sets", color = C.Text2, fontSize = 13.sp)
+                        Spacer(Modifier.height(10.dp))
+                        SysButton("▶  START GUIDED SESSION", onClick = { running = "challenge" }, selected = true, color = C.RunHot, modifier = Modifier.fillMaxWidth())
+                        Spacer(Modifier.height(6.dp))
+                        SysButton("▶ Follow-along video instead", onClick = { runCatching { uri.openUri(b.video) } }, color = C.Muted, small = true)
+                        b.honest?.let {
+                            Spacer(Modifier.height(6.dp))
+                            Text(it, color = C.Gold, fontSize = 11.sp)
+                        }
+                    }
+                    bodyList.forEach { p ->
+                        Panel {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(p.move.name, fontWeight = FontWeight.Bold)
+                                    Text(p.dose, color = C.Gold, fontSize = 12.sp, fontFamily = Mono)
+                                }
+                                SysButton("▶ How to", small = true, onClick = { runCatching { uri.openUri(p.move.demoUrl) } })
+                            }
+                            Text(p.move.how, color = C.Text2, fontSize = 12.sp)
+                        }
+                    }
+                    SysButton("Mark done without the coach", color = C.Good, small = true, onClick = { saveQuest(Challenges.questId(t), null) })
+                }
             }
             else -> {
                 FlowCard("Morning mobility · 8 min", "Office mornings. Slow and easy.", Program.mobilityFlow,
-                    onStart = { running = "mobility" }, onDone = { saveQuest("mobility", null) })
+                    onStart = { running = "mobility" }, onDone = { saveQuest("mobility", null) }, onDemo = { runCatching { uri.openUri(it) } })
                 FlowCard("Evening stretch · 10 min", "WFH and day-off evenings.", Program.stretchFlow,
-                    onStart = { running = "stretch" }, onDone = { saveQuest("stretch", null) })
+                    onStart = { running = "stretch" }, onDone = { saveQuest("stretch", null) }, onDemo = { runCatching { uri.openUri(it) } })
             }
         }
     }
+}
 
-    hold?.let { ex -> HoldTimer(ex, onClose = { hold = null }) }
+@Composable
+private fun StrengthCard(
+    week: Int,
+    list: List<Prescribed>,
+    skipsToday: Int,
+    showSpot: Boolean,
+    onStart: () -> Unit,
+    onDone: () -> Unit,
+    onDemo: (String) -> Unit,
+) {
+    SystemWindow(accent = C.Gold) {
+        SysLabel("Strength · week $week · today's combination", C.Gold)
+        Spacer(Modifier.height(4.dp))
+        Text("${list.size} moves · ${Exercises.totalSets(list)} sets", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text("A different mix every session. The voice coach explains each move, counts your reps and times your rests.", color = C.Text2, fontSize = 13.sp)
+        Spacer(Modifier.height(12.dp))
+        SysButton("▶  START GUIDED SESSION", onClick = onStart, selected = true, color = C.Gold, modifier = Modifier.fillMaxWidth())
+        if (skipsToday > 0) {
+            Spacer(Modifier.height(6.dp))
+            Text("Skips today: $skipsToday", color = C.Danger, fontSize = 12.sp, fontFamily = Mono)
+        }
+    }
+    list.forEach { p ->
+        Panel {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    SysLabel(p.move.group.label, C.Muted)
+                    Text(p.move.name, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text(p.dose + "  ·  level ${p.move.level}" + if (p.move.dumbbell) " · 🏋 dumbbell" else "", color = C.Gold, fontSize = 12.sp, fontFamily = Mono)
+                }
+                SysButton("▶ How to", small = true, onClick = { onDemo(p.move.demoUrl) })
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(p.move.how, color = C.Text2, fontSize = 13.sp)
+        }
+    }
+    Panel {
+        Text(Exercises.NOTE, color = C.Muted, fontSize = 12.sp)
+        if (showSpot) {
+            Spacer(Modifier.height(8.dp))
+            Text(Exercises.SPOT_NOTE, color = C.Text2, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(10.dp))
+        SysButton("Mark done without the coach", onClick = onDone, color = C.Good, small = true)
+    }
 }
 
 @Composable
@@ -318,7 +580,7 @@ private fun RunSummary(
     onDiscard: () -> Unit,
 ) {
     val steps = runSteps(plan)
-    val secs = doneSecs(steps, end.elapsedMs)
+    val secs = doneSecs(steps, end)
     val runIdx = steps.indices.filter { steps[it].seg == SegKind.RUN }
     val runsDone = runIdx.count { secs[it] >= steps[it].sec }
     val runSecDone = runIdx.sumOf { secs[it] }
@@ -342,7 +604,8 @@ private fun RunSummary(
             Spacer(Modifier.height(6.dp))
             Text("Runs completed: $runsDone of ${plan.runs.size}", fontSize = 22.sp, fontWeight = FontWeight.Bold)
             Text("Running time ${dur(runSecDone)} · total ${end.elapsedMs / 60000} min", color = C.Text2, fontSize = 14.sp)
-            if (!end.finished) {
+            if (end.skipped.isNotEmpty()) Text("Skipped intervals: ${end.skipped.size}", color = C.Danger, fontSize = 13.sp)
+            if (!end.finished || end.skipped.isNotEmpty()) {
                 Spacer(Modifier.height(6.dp))
                 Text(
                     if (runsDone * 2 >= plan.runs.size) "Over half: this counts toward clearing your day. 💪"
@@ -391,14 +654,24 @@ private fun SummaryField(label: String, value: String, type: KeyboardType = Keyb
 }
 
 @Composable
-private fun FlowCard(title: String, note: String, flow: List<Exercise>, onStart: () -> Unit, onDone: () -> Unit) {
+private fun FlowCard(
+    title: String,
+    note: String,
+    flow: List<Exercise>,
+    onStart: () -> Unit,
+    onDone: () -> Unit,
+    onDemo: (String) -> Unit,
+) {
     Panel {
         SysLabel(title)
         Spacer(Modifier.height(6.dp))
         flow.forEach { ex ->
-            Column(Modifier.padding(vertical = 4.dp)) {
-                Text("${ex.name} · ${ex.dose}", fontWeight = FontWeight.SemiBold)
-                Text(ex.cue, color = C.Muted, fontSize = 12.sp)
+            Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("${ex.name} · ${ex.dose}", fontWeight = FontWeight.SemiBold)
+                    Text(ex.cue, color = C.Muted, fontSize = 12.sp)
+                }
+                SysButton("▶ How", small = true, color = C.Muted, onClick = { onDemo(demoUrl(ex.name + " stretch")) })
             }
         }
         Spacer(Modifier.height(6.dp))
@@ -406,89 +679,14 @@ private fun FlowCard(title: String, note: String, flow: List<Exercise>, onStart:
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SysButton("▶ Guided timer", onClick = onStart, selected = true, modifier = Modifier.weight(1f))
-            SysButton("Done without timer", onClick = onDone, color = C.Good, small = true)
+            SysButton("Mark done", onClick = onDone, color = C.Good, small = true)
         }
     }
-}
-
-@Composable
-private fun ExerciseChecklist(
-    title: String,
-    list: List<Exercise>,
-    note: String,
-    button: String,
-    onHold: (Exercise) -> Unit,
-    onComplete: () -> Unit,
-) {
-    val checked = remember(title) { mutableStateListOf<Boolean>().apply { repeat(list.size) { add(false) } } }
-    Panel {
-        SysLabel(title)
-        Spacer(Modifier.height(6.dp))
-        list.forEachIndexed { i, ex ->
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable { checked[i] = !checked[i] }
-                    .padding(vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(if (checked[i]) "☑" else "☐", fontSize = 18.sp, color = if (checked[i]) C.Good else C.Muted, modifier = Modifier.width(30.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("${ex.name} · ${ex.dose}", fontWeight = FontWeight.SemiBold, color = if (checked[i]) C.Text2 else C.Text)
-                    Text(ex.cue, color = C.Muted, fontSize = 12.sp)
-                }
-                if (ex.sec > 0) SysButton("▶ ${ex.sec}s", small = true, onClick = { onHold(ex) })
-            }
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(note, color = C.Muted, fontSize = 12.sp)
-        Spacer(Modifier.height(10.dp))
-        SysButton(button, onClick = onComplete, color = C.Good, selected = checked.all { it }, modifier = Modifier.fillMaxWidth())
-    }
-}
-
-/** A countdown for one hold (plank etc.): 3-second get-ready, then the hold. */
-@Composable
-private fun HoldTimer(ex: Exercise, onClose: () -> Unit) {
-    val ctx = LocalContext.current
-    var left by remember { mutableIntStateOf(ex.sec + 3) }
-    LaunchedEffect(Unit) {
-        while (left > 0) {
-            delay(1000)
-            left--
-            if (left == ex.sec) Cues.go(ctx)
-        }
-        Cues.finish(ctx)
-    }
-    val prep = left > ex.sec
-    AlertDialog(
-        onDismissRequest = onClose,
-        containerColor = C.Panel,
-        title = { Text(ex.name + if (ex.perSide) " (one side)" else "") },
-        text = {
-            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    when {
-                        left == 0 -> "DONE"
-                        prep -> "GET READY"
-                        else -> "HOLD"
-                    },
-                    color = if (prep) C.Muted else C.Glow, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 20.sp,
-                )
-                Text(
-                    (if (prep) left - ex.sec else left).toString(),
-                    fontSize = 64.sp, fontFamily = Mono, fontWeight = FontWeight.Bold,
-                )
-                Text(ex.cue, color = C.Text2, fontSize = 13.sp)
-            }
-        },
-        confirmButton = { TextButton(onClick = onClose) { Text(if (left == 0) "Close" else "Stop", color = C.Glow) } },
-    )
 }
 
 /**
- * Runs a list of timed steps. In-app cues fire while the screen is visible; background alarms
- * (CoachCues) take over when you switch apps. Ending early reports how far you got.
+ * Runs a list of timed steps with a voice coach. In-app cues fire while the screen is visible;
+ * background alarms (CoachCues) take over when you switch apps. Every skip of real work asks why.
  */
 @Composable
 private fun TimedSession(
@@ -496,9 +694,11 @@ private fun TimedSession(
     steps: List<Step>,
     hotColor: Color,
     guide: (Step) -> String?,
+    onSkip: (Step, ExSkip) -> Unit,
     onEnd: (SessionEnd) -> Unit,
 ) {
     val ctx = LocalContext.current
+    val uri = LocalUriHandler.current
     val view = LocalView.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
 
@@ -507,10 +707,20 @@ private fun TimedSession(
     var elapsed by remember { mutableLongStateOf(0L) }
     var paused by remember { mutableStateOf(false) }
     var jumps by remember { mutableIntStateOf(0) }
+    var asking by remember { mutableStateOf(false) }
+    val skipped = remember { mutableStateListOf<Int>() }
 
     fun end() {
         CoachCues.cancel(ctx)
-        onEnd(SessionEnd(elapsed, elapsed >= totalMs))
+        Voice.stop()
+        onEnd(SessionEnd(elapsed, elapsed >= totalMs, skipped.toSet()))
+    }
+
+    /** Jumps to the start of [target], marking real work in between as skipped. */
+    fun jumpTo(from: Int, target: Int, markSkipped: Boolean) {
+        if (markSkipped) (from until target).filter { steps[it].hot }.forEach { if (it !in skipped) skipped.add(it) }
+        elapsed = starts[target.coerceAtMost(steps.size)] * 1000L
+        jumps++
     }
 
     DisposableEffect(Unit) {
@@ -529,6 +739,7 @@ private fun TimedSession(
             lifecycle.removeObserver(obs)
             CoachCues.onScreen = false
             CoachCues.cancel(ctx)
+            Voice.stop()
         }
     }
     BackHandler(onBack = { end() })
@@ -545,9 +756,9 @@ private fun TimedSession(
                 CoachCues.Cue(
                     base + starts[i] * 1000L,
                     "[SYSTEM] ${st.label} now · ${dur(st.sec)}",
-                    listOfNotNull(st.sub, g).joinToString(" · "),
+                    listOfNotNull(st.sub.lineSequence().firstOrNull(), g).joinToString(" · "),
                 )
-            } + CoachCues.Cue(base + totalMs, "[SYSTEM] Session complete", "Open Arise to claim your reward.")
+            } + CoachCues.Cue(base + totalMs, "[SYSTEM] Session complete", "Open Arise and mark it done.")
             CoachCues.schedule(ctx, cues)
         }
     }
@@ -566,55 +777,145 @@ private fun TimedSession(
 
     val finished = elapsed >= totalMs
     val idx = if (finished) steps.lastIndex else starts.indexOfLast { it * 1000L <= elapsed }.coerceIn(0, steps.lastIndex)
+    val step = steps[idx]
+    val inStepMs = elapsed - starts[idx] * 1000L
+    val repsDone = if (step.reps > 0) (inStepMs / (step.tempo * 1000L)).toInt().coerceIn(0, step.reps) else 0
+    val remainingSec = ((starts[idx + 1] * 1000L - elapsed) / 1000L).toInt().coerceAtLeast(0)
+
+    // Voice: announce each step, count reps, count down the end of holds and rests.
     LaunchedEffect(idx, finished) {
         when {
-            finished -> Cues.finish(ctx)
-            elapsed > 500 -> if (steps[idx].hot) Cues.go(ctx) else Cues.rest(ctx)
+            finished -> {
+                Cues.finish(ctx)
+                Voice.say("Session complete. Well done.")
+            }
+            else -> {
+                if (elapsed > 500) {
+                    if (step.hot) Cues.go(ctx) else Cues.rest(ctx)
+                }
+                Voice.say(step.say.ifBlank { step.label }, now = false)
+            }
+        }
+    }
+    LaunchedEffect(idx, repsDone) {
+        if (!finished && !paused && step.reps > 0 && repsDone > 0) {
+            Voice.say(if (repsDone == step.reps) "$repsDone. Done." else "$repsDone")
+        }
+    }
+    LaunchedEffect(idx, remainingSec) {
+        if (finished || paused || step.reps > 0) return@LaunchedEffect
+        when {
+            step.hot && step.sec >= 20 && remainingSec == 10 -> Voice.say("Ten seconds.")
+            step.hot && remainingSec in 1..3 -> Voice.say("$remainingSec")
+            !step.hot && !step.prep && remainingSec == 5 -> Voice.say("Get ready.")
         }
     }
 
-    val step = steps[idx]
-    val remainingSec = ((starts[idx + 1] * 1000L - elapsed) / 1000L).toInt().coerceAtLeast(0)
     val color = if (step.hot) hotColor else C.Muted
-    val moveCount = steps.count { !it.prep }
-    val moveNumber = steps.take(idx + 1).count { !it.prep }
+    val workSteps = steps.count { it.hot }
+    val workNumber = steps.take(idx + 1).count { it.hot }
 
     Column(
         Modifier.fillMaxSize().padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         SysLabel("[System] $title")
         Spacer(Modifier.weight(1f))
         if (finished) {
             Text("QUEST COMPLETE", color = C.Gold, fontFamily = Mono, fontSize = 28.sp, fontWeight = FontWeight.Bold)
             Text("Well done. Your body thanks you.", color = C.Text2)
+            if (skipped.isNotEmpty()) Text("Skipped: ${skipped.size}", color = C.Danger, fontFamily = Mono)
             Spacer(Modifier.weight(1f))
-            SysButton("CLAIM REWARD", onClick = { end() }, selected = true, color = C.Gold, modifier = Modifier.fillMaxWidth())
+            SysButton("MARK DONE", onClick = { end() }, selected = true, color = C.Gold, modifier = Modifier.fillMaxWidth())
         } else {
-            Text(step.label, color = color, fontFamily = Mono, fontSize = 26.sp, fontWeight = FontWeight.Bold)
-            Text(
-                "%d:%02d".format(remainingSec / 60, remainingSec % 60),
-                fontSize = 84.sp, fontWeight = FontWeight.Bold, fontFamily = Mono,
-            )
-            guide(step)?.let { Text(it, color = C.Gold, fontSize = 14.sp, fontFamily = Mono) }
-            Text(step.sub, color = C.Text2, fontSize = 14.sp)
-            if (!step.prep) Text("$moveNumber of $moveCount", color = C.Muted, fontSize = 13.sp)
-            steps.getOrNull(idx + 1)?.takeIf { !step.prep }?.let { n ->
-                val next = if (n.prep) steps.getOrNull(idx + 2) else n
+            Text(step.label, color = color, fontFamily = Mono, fontSize = 26.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            if (step.reps > 0) {
+                Text("$repsDone / ${step.reps}", fontSize = 84.sp, fontWeight = FontWeight.Bold, fontFamily = Mono)
+                Text("reps · ${step.tempo}s each · count with the voice", color = C.Muted, fontSize = 12.sp)
+            } else {
+                Text(
+                    "%d:%02d".format(remainingSec / 60, remainingSec % 60),
+                    fontSize = 84.sp, fontWeight = FontWeight.Bold, fontFamily = Mono,
+                )
+            }
+            guide(step)?.let { Text(it, color = C.Gold, fontSize = 14.sp, fontFamily = Mono, textAlign = TextAlign.Center) }
+            Text(step.sub, color = C.Text2, fontSize = 14.sp, textAlign = TextAlign.Center)
+            step.demo?.let { url ->
+                SysButton("▶ How to do this", small = true, color = C.Muted, onClick = {
+                    paused = true
+                    runCatching { uri.openUri(url) }
+                })
+            }
+            if (step.hot) Text("$workNumber of $workSteps", color = C.Muted, fontSize = 13.sp)
+            steps.getOrNull(idx + 1)?.let { n ->
+                val next = if (n.prep || (!n.hot && !step.hot)) steps.drop(idx + 1).firstOrNull { it.hot } else n
                 if (next != null) Text("Next: ${next.label} ${dur(next.sec)}", color = C.Muted)
             }
             XpBar(elapsed.toFloat() / totalMs, if (step.hot) hotColor else C.Glow)
+            if (skipped.isNotEmpty()) Text("Skips: ${skipped.size}", color = C.Danger, fontSize = 12.sp, fontFamily = Mono)
             Text("You can switch apps: the System will alert you at each change.", color = C.Muted, fontSize = 11.sp)
             Spacer(Modifier.weight(1f))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 SysButton(if (paused) "▶ Resume" else "❚❚ Pause", onClick = { paused = !paused })
                 SysButton("Skip ›", onClick = {
-                    elapsed = starts[idx + 1] * 1000L
-                    jumps++
+                    if (step.askSkip) {
+                        paused = true
+                        asking = true
+                    } else {
+                        jumpTo(idx, idx + 1, markSkipped = false)
+                    }
                 })
                 SysButton("End & save", onClick = { end() }, color = C.Danger)
             }
         }
+    }
+
+    if (asking) {
+        AlertDialog(
+            onDismissRequest = {
+                asking = false
+                paused = false
+            },
+            containerColor = C.Panel,
+            title = {
+                Column {
+                    SysLabel("[System] Skip detected", C.Danger)
+                    Spacer(Modifier.height(4.dp))
+                    Text("Why are you skipping ${step.label.substringBefore(" · ")}?", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Every skip is counted. Your answer changes what the System gives you next time.", color = C.Text2, fontSize = 13.sp)
+                    step.demo?.let { url ->
+                        SysButton("▶ Not sure how? Watch first, then come back", modifier = Modifier.fillMaxWidth(), color = C.Muted, onClick = {
+                            asking = false
+                            runCatching { uri.openUri(url) }
+                        })
+                    }
+                    ExSkip.entries.forEach { reason ->
+                        SysButton("${reason.icon}  ${reason.label}", modifier = Modifier.fillMaxWidth(), color = C.Danger, onClick = {
+                            asking = false
+                            onSkip(step, reason)
+                            // Strength skips the whole exercise; runs and flows skip just this step.
+                            val target = if (step.moveId != null) {
+                                (idx + 1 until steps.size).firstOrNull { steps[it].group != step.group } ?: steps.size
+                            } else {
+                                idx + 1
+                            }
+                            jumpTo(idx, target, markSkipped = true)
+                            paused = false
+                        })
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    asking = false
+                    paused = false
+                }) { Text("Keep going", color = C.Glow) }
+            },
+        )
     }
 }

@@ -9,8 +9,8 @@ enum class Topic(val label: String, val icon: String, val weight: Double) {
     WORLD("How the world works", "🌍", 1.0),
     MONEY("Money", "💰", 1.0),
     MIND("Mind & psychology", "🪞", 1.0),
-    KOREAN("Korean deep", "🇰🇷", 1.6),
-    SIGN("Sign language", "🤟", 1.3),
+    LANGUAGE("Language", "🗣", 1.6),
+    SIGN("Sign language (ASL)", "🤟", 1.3),
     WILDCARD("Wildcard", "⚡", 0.0),
 }
 
@@ -22,6 +22,8 @@ data class Lesson(
     val url: String,
     /** What to do. */
     val task: String,
+    /** Hand-written recall questions with the points a good answer covers. Empty = general questions. */
+    val recall: List<Pair<String, String>> = emptyList(),
 )
 
 /**
@@ -40,7 +42,13 @@ object Curriculum {
 
     private val learn: List<Lesson> = listOf(
         Lesson(Topic.LEARN, "Learning how to learn (TEDx talk)", "Barbara Oakley · YouTube", 18,
-            yt("Barbara Oakley Learning how to learn TEDxOaklandUniversity"), WATCH),
+            yt("Barbara Oakley Learning how to learn TEDxOaklandUniversity"), WATCH,
+            recall = listOf(
+                "What are the focused mode and the diffuse mode, and when do you need each one?" to
+                    "Focused = concentrating hard on a problem. Diffuse = relaxed, wandering mind (walks, showers, sleep) where new connections form. You need both, switching between them.",
+                "What is the Pomodoro technique and why does it beat procrastination?" to
+                    "25 minutes of focus, then a short break. Starting is the painful part; a timer makes the start small, and the break is the reward.",
+            )),
     ) + (1..4).flatMap { m ->
         listOf("first", "second").map { half ->
             Lesson(
@@ -54,10 +62,34 @@ object Curriculum {
 
     private val body: List<Lesson> = run {
         val specials = listOf(
-            Lesson(Topic.BODY, "Sleep is your superpower", "Matt Walker · TED", 20, yt("Matt Walker Sleep is your superpower TED"), WATCH),
-            Lesson(Topic.BODY, "Insulin resistance, explained", "YouTube", 12, yt("insulin resistance explained simply"), WATCH),
-            Lesson(Topic.BODY, "PCOS: what's actually happening", "YouTube", 12, yt("PCOS explained hormones insulin"), WATCH),
-            Lesson(Topic.BODY, "The brain-changing benefits of exercise", "Wendy Suzuki · TED", 13, yt("Wendy Suzuki brain changing benefits of exercise TED"), WATCH),
+            Lesson(Topic.BODY, "Sleep is your superpower", "Matt Walker · TED", 20, yt("Matt Walker Sleep is your superpower TED"), WATCH,
+                recall = listOf(
+                    "What happens to memory and learning when you don't sleep enough?" to
+                        "Sleep after learning saves new memories ('save button'); sleep before learning prepares the brain to take them in. Without it, learning drops sharply.",
+                    "Name two things from the talk you'll change about your own sleep." to
+                        "His tips: regular sleep and wake times, even on weekends, and a cool, dark room. Your answer should name your own two changes.",
+                )),
+            Lesson(Topic.BODY, "Insulin resistance, explained", "YouTube", 12, yt("insulin resistance explained simply"), WATCH,
+                recall = listOf(
+                    "Explain insulin resistance like you're talking to a friend." to
+                        "Insulin lets sugar into cells. With resistance the cells respond less, so the body makes more insulin; high insulin makes fat storage easier and hunger harder to control.",
+                    "Which three habits improve insulin sensitivity the most?" to
+                        "Strength training (muscle soaks up sugar), walking after meals, and enough sleep. Protein and fibre before carbs also help.",
+                )),
+            Lesson(Topic.BODY, "PCOS: what's actually happening", "YouTube", 12, yt("PCOS explained hormones insulin"), WATCH,
+                recall = listOf(
+                    "How are insulin and PCOS connected?" to
+                        "High insulin pushes the ovaries to make more androgens (male-type hormones), which disrupts ovulation and cycles. Lower insulin often means fewer symptoms.",
+                    "What can you do every day that helps PCOS?" to
+                        "Strength training, walking after meals, steady sleep, protein-first meals, managing stress. No crash diets.",
+                )),
+            Lesson(Topic.BODY, "The brain-changing benefits of exercise", "Wendy Suzuki · TED", 13, yt("Wendy Suzuki brain changing benefits of exercise TED"), WATCH,
+                recall = listOf(
+                    "What does one workout do to your brain right away?" to
+                        "It releases neurotransmitters like dopamine, serotonin and noradrenaline: better mood and focus for at least 2 hours.",
+                    "What does regular exercise do over the long term?" to
+                        "It grows new brain cells in the hippocampus (memory) and strengthens the prefrontal cortex (focus), protecting the brain as you age.",
+                )),
         )
         val ap = series(Topic.BODY, "Crash Course Anatomy and Physiology", 47, 11)
         // One special every third lesson, then the series continues.
@@ -82,39 +114,38 @@ object Curriculum {
     } + series(Topic.MONEY, "Crash Course Economics", 35, 11)
 
     private val korean: List<Lesson> = buildList {
-        add(Lesson(Topic.KOREAN, "Hangul reading practice", "Go! Billy Korean · YouTube", 15, yt("Go Billy Korean Hangul reading practice"),
+        add(Lesson(Topic.LANGUAGE, "Hangul reading practice", "Go! Billy Korean · YouTube", 15, yt("Go Billy Korean Hangul reading practice"),
             "Read along out loud. Then write 10 Korean words you can now read without stopping."))
-        add(Lesson(Topic.KOREAN, "Hangul speed reading", "YouTube", 12, yt("Korean Hangul reading practice words"),
+        add(Lesson(Topic.LANGUAGE, "Hangul speed reading", "YouTube", 12, yt("Korean Hangul reading practice words"),
             "Read every word out loud before the answer appears. Note the ones you missed."))
         var level1 = 1
         var easy = 1
         while (level1 <= 25) {
-            add(Lesson(Topic.KOREAN, "TTMIK Level 1 · Lesson $level1", "Talk To Me In Korean (free)", 15,
+            add(Lesson(Topic.LANGUAGE, "TTMIK Level 1 · Lesson $level1", "Talk To Me In Korean (free)", 15,
                 yt("Talk To Me In Korean Level 1 Lesson $level1"),
                 "Write the grammar point and 3 example sentences. Say each one out loud 3 times."))
             if (level1 % 4 == 0) {
-                add(Lesson(Topic.KOREAN, "Easy Korean street interview #$easy", "Easy Korean · YouTube", 12, yt("Easy Korean $easy"),
+                add(Lesson(Topic.LANGUAGE, "Easy Korean street interview #$easy", "Easy Korean · YouTube", 12, yt("Easy Korean $easy"),
                     "Watch with Korean + English subtitles. Write down 5 words or phrases you heard."))
                 easy++
             }
             level1++
         }
         (1..30).forEach { n ->
-            add(Lesson(Topic.KOREAN, "TTMIK Level 2 · Lesson $n", "Talk To Me In Korean (free)", 15,
+            add(Lesson(Topic.LANGUAGE, "TTMIK Level 2 · Lesson $n", "Talk To Me In Korean (free)", 15,
                 yt("Talk To Me In Korean Level 2 Lesson $n"),
                 "Write the grammar point and 3 example sentences about your own life."))
         }
     }
 
-    private val sign: List<Lesson> = (1..10).flatMap { m ->
-        listOf("Part A", "Part B").map { part ->
-            Lesson(
-                Topic.SIGN, "Indian Sign Language · Module $m, $part", "ISLRTC (Govt. of India)", 15,
-                "https://islrtc.nic.in/online-basic-isl-course-in-self-learning-mode/",
-                "Copy each sign in front of a mirror 3 times. Sketch or describe 5 signs in your notebook. " +
-                    "If the ISLRTC site doesn't work, do Lifeprint ASL Lesson $m instead (lifeprint.com).",
-            )
-        }
+    // Dr. Bill Vicars (Lifeprint / ASL University): a real teacher, a structured free course, short lessons.
+    private val sign: List<Lesson> = (1..30).map { n ->
+        Lesson(
+            Topic.SIGN, "ASL with Dr. Bill Vicars · Lesson $n", "Lifeprint ASLU · YouTube (free)", 20,
+            yt("Bill Vicars ASL Lesson $n"),
+            "Sign along with him in front of a mirror. Then, without the video, sign 5 words from today and " +
+                "sketch them in your notebook with a tiny drawing.",
+        )
     }
 
     private val wildcards = listOf(
@@ -132,21 +163,50 @@ object Curriculum {
         "Vsauce What Is The Speed of Dark" to "What is the speed of dark? · Vsauce",
     ).map { (q, title) -> Lesson(Topic.WILDCARD, title, "YouTube", 15, yt(q), WATCH) }
 
-    fun lessons(topic: Topic): List<Lesson> = when (topic) {
+    /** A beginner series for any language other than Korean (which has its own hand-picked course). */
+    private fun languageSeries(lang: String): List<Lesson> = (1..60).map { n ->
+        Lesson(
+            Topic.LANGUAGE, "$lang for beginners · Lesson $n", "YouTube", 15,
+            yt("learn $lang for beginners lesson $n"),
+            "Repeat every sentence out loud. Write 5 new words and one sentence about your own day.",
+        )
+    }
+
+    fun lessons(topic: Topic, lang: String? = null): List<Lesson> = when (topic) {
         Topic.LEARN -> learn
         Topic.BODY -> body
         Topic.TECH -> tech
         Topic.WORLD -> world
         Topic.MONEY -> money
         Topic.MIND -> mind
-        Topic.KOREAN -> korean
+        Topic.LANGUAGE -> when {
+            lang == null -> emptyList()
+            lang.equals("Korean", ignoreCase = true) -> korean
+            else -> languageSeries(lang)
+        }
         Topic.SIGN -> sign
         Topic.WILDCARD -> wildcards
     }
 
+    private val general = listOf(
+        "Explain the main idea like you're telling a friend who's never heard of it.",
+        "What's one thing from today's lesson that surprised you, and why?",
+        "Teach it back: what were the 3 most important points?",
+        "How could you use what you learned today in your own life this week?",
+        "What's one question you still have after this lesson?",
+        "If you had to summarise today's lesson in 30 seconds, what would you say?",
+    )
+
+    /** 1–2 questions to answer out loud after a lesson. Second = the key points to check yourself, if known. */
+    fun recall(lesson: Lesson?, date: java.time.LocalDate): List<Pair<String, String?>> {
+        if (lesson != null && lesson.recall.isNotEmpty()) return lesson.recall.map { it.first to it.second }
+        val rnd = java.util.Random(date.toEpochDay() * 13L + 1L)
+        return general.shuffled(rnd).take(2).map { it to null }
+    }
+
     /** Wildcards loop forever; other topics retire once finished. */
-    fun lesson(topic: Topic, index: Int): Lesson? {
-        val list = lessons(topic)
+    fun lesson(topic: Topic, index: Int, lang: String? = null): Lesson? {
+        val list = lessons(topic, lang)
         return if (topic == Topic.WILDCARD) list[Math.floorMod(index, list.size)] else list.getOrNull(index)
     }
 }

@@ -8,6 +8,24 @@
         android:name="android.permission.SCHEDULE_EXACT_ALARM"
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- System pop-ups over other apps and on the lock screen. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
+    <!-- Needed on Android 11+ to reach the text-to-speech engine and speech recognition. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+        <!-- The screen blocker lists your apps so you can pick which to seal. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="true"
@@ -27,8 +45,43 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".notify.SystemAlertActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="com.arise.app.alert"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.Arise.Popup" />
+
+        <activity
+            android:name=".notify.BlockActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="com.arise.app.block"
+            android:theme="@style/Theme.Arise" />
+
+        <service
+            android:name=".notify.BlockerService"
+            android:exported="true"
+            android:label="Arise screen blocker"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/blocker_service" />
+        </service>
+
         <receiver
             android:name=".notify.ReminderReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".notify.QuestActionReceiver"
             android:exported="false" />
 
         <receiver
@@ -49,13 +102,49 @@
         <receiver
             android:name=".widget.AriseWidgetReceiver"
             android:exported="true"
-            android:label="@string/app_name">
+            android:label="Arise · Next quest">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/arise_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.StatusWidgetReceiver"
+            android:exported="true"
+            android:label="Arise · Status">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_status_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.QuestListWidgetReceiver"
+            android:exported="true"
+            android:label="Arise · Quest list">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_list_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.CountdownWidgetReceiver"
+            android:exported="true"
+            android:label="Arise · Countdown">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_countdown_info" />
         </receiver>
     </application>
 </manifest>

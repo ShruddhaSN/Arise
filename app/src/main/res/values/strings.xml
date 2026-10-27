@@ -1,4 +1,8 @@
 <resources>
     <string name="app_name">Arise</string>
     <string name="widget_desc">Your next quest, level and streak</string>
+    <string name="widget_status_desc">Rank, level, streak and today\'s progress</string>
+    <string name="widget_list_desc">Every quest left today. Tick them off from the home screen</string>
+    <string name="widget_countdown_desc">Days left in the year, and your mode</string>
+    <string name="blocker_desc">Arise seals the apps you choose (like Instagram) during your phone-free morning, focus sessions and the night. It only looks at which app is opening, never at what\'s on screen.</string>
 </resources>

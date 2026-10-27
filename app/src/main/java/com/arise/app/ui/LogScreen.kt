@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.sp
 import com.arise.app.data.AppData
 import com.arise.app.data.DayRecord
 import com.arise.app.data.Done
+import com.arise.app.game.Feats
 import com.arise.app.game.Game
 import com.arise.app.game.Program
 import com.arise.app.game.fmt
@@ -101,7 +102,7 @@ fun LogScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Unit) {
                     pickTime(rec.bedTime, LocalTime.of(23, 0)) { onUpdate(data.with(rec.copy(bedTime = it))) }
                 })
                 SysButton("Woke: ${rec.wakeTime?.let { fmt(LocalTime.parse(it)) } ?: "set"}", onClick = {
-                    pickTime(rec.wakeTime, LocalTime.of(6, 30)) { onUpdate(data.with(rec.copy(wakeTime = it))) }
+                    pickTime(rec.wakeTime, LocalTime.now()) { onUpdate(data.with(rec.copy(wakeTime = it))) }
                 })
             }
             sleepMinutes(rec)?.let {
@@ -185,6 +186,8 @@ fun LogScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Unit) {
             })
         }
 
+        SysLabel("Growth")
+        GrowthPanel(data, today)
         SysLabel("Trends")
         Charts(data, today)
         SkipPatterns(data, today)
@@ -305,25 +308,88 @@ private fun Charts(data: AppData, today: LocalDate) {
     }
 }
 
-/** "Not today" reasons over the last 30 days, so patterns become visible. */
+/** Lifetime totals, then your first week against your last 7 days. */
+@Composable
+private fun GrowthPanel(data: AppData, today: LocalDate) {
+    val totals = remember(data, today) { Feats.totals(data, today) }
+    val growth = remember(data, today) { Feats.growth(data, today) }
+    val tracked = (java.time.temporal.ChronoUnit.DAYS.between(data.settings.earliest, today) + 1).toInt().coerceAtLeast(0)
+    Panel(accent = C.Gold) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            totals.entries.take(4).forEach { (label, n) ->
+                Column(Modifier.weight(1f)) {
+                    Text("%,d".format(n), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = C.Gold)
+                    Text(label, color = C.Muted, fontSize = 10.sp)
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        if (growth.isEmpty()) {
+            Text("📈 Before vs after unlocks after 10 days (${minOf(tracked, 10)}/10)", color = C.Muted, fontSize = 13.sp)
+            Spacer(Modifier.height(6.dp))
+            XpBar(minOf(tracked, 10) / 10f, height = 4.dp)
+        } else {
+            Row {
+                Text("", modifier = Modifier.weight(1f))
+                Text("FIRST WEEK", color = C.Muted, fontSize = 9.sp, fontFamily = Mono, modifier = Modifier.width(84.dp))
+                Text("LAST 7 DAYS", color = C.Muted, fontSize = 9.sp, fontFamily = Mono, modifier = Modifier.width(84.dp))
+            }
+            growth.forEach { g ->
+                Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("${g.icon} ${g.label}", fontSize = 13.sp, modifier = Modifier.weight(1f))
+                    Text(g.before, color = C.Text2, fontSize = 12.sp, fontFamily = Mono, modifier = Modifier.width(84.dp))
+                    Text(
+                        g.after + when (g.better) {
+                            true -> " ▲"
+                            false -> " ▼"
+                            null -> ""
+                        },
+                        color = when (g.better) {
+                            true -> C.Good
+                            false -> C.Danger
+                            null -> C.Text2
+                        },
+                        fontSize = 12.sp, fontFamily = Mono, fontWeight = FontWeight.Bold, modifier = Modifier.width(84.dp),
+                    )
+                }
+            }
+            Text("▲ = better, whichever way better is (earlier wake-up, more water…).", color = C.Muted, fontSize = 10.sp)
+        }
+    }
+}
+
+/** "Not today" reasons and workout skips over the last 30 days, so patterns become visible. */
 @Composable
 private fun SkipPatterns(data: AppData, today: LocalDate) {
     val from = today.minusDays(30)
-    val skips = data.records.values.filter { it.date > from }.flatMap { r -> r.skipped.map { it.key to it.value } }
-    if (skips.isEmpty()) return
+    val recent = data.records.values.filter { it.date > from }
+    val skips = recent.flatMap { r -> r.skipped.map { it.key to it.value } }
+    val ex = recent.flatMap { it.exSkips }
+    if (skips.isEmpty() && ex.isEmpty()) return
     Panel {
         SysLabel("Skip patterns · 30 days")
-        Spacer(Modifier.height(6.dp))
-        skips.groupingBy { it.second }.eachCount().entries.sortedByDescending { it.value }.forEach { (reason, n) ->
-            Text("${reason.icon} ${reason.label}: $n", color = C.Text2, fontSize = 13.sp)
+        if (skips.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Text("Quests skipped: ${skips.size}", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            skips.groupingBy { it.second }.eachCount().entries.sortedByDescending { it.value }.forEach { (reason, n) ->
+                Text("${reason.icon} ${reason.label}: $n", color = C.Text2, fontSize = 13.sp)
+            }
+            val names = Game.plan(data, today).quests.associate { it.id to it.title }
+            val top = skips.groupingBy { it.first }.eachCount().entries.sortedByDescending { it.value }.take(3)
+            Text(
+                "Most skipped: " + top.joinToString(" · ") { "${names[it.key] ?: it.key} (${it.value})" },
+                color = C.Muted, fontSize = 12.sp,
+            )
         }
-        Spacer(Modifier.height(6.dp))
-        val names = Game.plan(data, today).quests.associate { it.id to it.title }
-        val top = skips.groupingBy { it.first }.eachCount().entries.sortedByDescending { it.value }.take(3)
-        Text(
-            "Most skipped: " + top.joinToString(" · ") { "${names[it.key] ?: it.key} (${it.value})" },
-            color = C.Muted, fontSize = 12.sp,
-        )
+        if (ex.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Text("Skipped inside workouts: ${ex.size}", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            ex.groupingBy { it.reason }.eachCount().entries.sortedByDescending { it.value }.forEach { (reason, n) ->
+                Text("${reason.icon} ${reason.label}: $n", color = C.Text2, fontSize = 13.sp)
+            }
+            val top = ex.groupingBy { it.exercise }.eachCount().entries.sortedByDescending { it.value }.take(3)
+            Text("Most skipped: " + top.joinToString(" · ") { "${it.key} (${it.value})" }, color = C.Muted, fontSize = 12.sp)
+        }
     }
 }
 

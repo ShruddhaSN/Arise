@@ -34,6 +34,16 @@ object Cues {
 
     fun tap(ctx: Context) = vibrate(ctx, longArrayOf(0, 25))
 
+    /** A System window appearing. */
+    fun ping(ctx: Context) {
+        vibrate(ctx, longArrayOf(0, 40, 60, 40))
+        runCatching {
+            val tg = ToneGenerator(AudioManager.STREAM_MUSIC, 55)
+            tg.startTone(ToneGenerator.TONE_PROP_ACK, 150)
+            Handler(Looper.getMainLooper()).postDelayed({ tg.release() }, 400L)
+        }
+    }
+
     @Suppress("DEPRECATION")
     private fun vibrate(ctx: Context, pattern: LongArray) {
         runCatching {

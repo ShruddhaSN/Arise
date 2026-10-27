@@ -1,6 +1,6 @@
 # ARISE ⚔️
 
-A Solo Leveling–style life system for Android: daily quests tied to your schedule, XP and ranks, a run coach, strength sessions, a body log with charts, boss fights, notifications and a home-screen widget.
+A Solo Leveling–style life system for Android. A short assessment learns your life (work or college, commute, meals, medicines, routines), then the System gives you daily quests built around it: XP and ranks, a voice-guided run and strength coach, routines, Pomodoro, a screen blocker, growth insights, achievements, pop-ups and widgets. Everything stays on your phone.
 
 ## Getting the app onto your phone (nothing to install)
 
@@ -26,7 +26,12 @@ MIUI aggressively kills background apps. Long-press the Arise icon → **App inf
 - **Battery saver** → No restrictions
 - **Notifications** → allow all, including lock screen and floating
 
-Then add the widget: long-press the home screen → **Widgets** → **Arise**.
+Then add the widgets: long-press the home screen → **Widgets** → **Arise** (4 kinds).
+
+### Screen blocker
+Tools → Screen blocker → turn it on. On Samsung: Settings → Accessibility → Installed apps → Arise → On.
+If it's greyed out (Android blocks this for apps installed outside the Play Store): long-press the Arise icon →
+**App info** → **⋮** → **Allow restricted settings**, then turn it on.
 
 ### Updating
 When the code changes, upload the changed files to the repo again. A new APK is built automatically. Install it over the old one and your data stays, because every build is signed with the same key (`app/arise.keystore`).
@@ -38,7 +43,10 @@ Every Sunday, go to **Player → Save backup file** and save it to Google Drive.
 
 | Thing | Rule |
 |---|---|
-| Day 1 | The day you finish the first-time setup (name, work days, wake times, "already started on paper?", goal). Weeks count from here. |
+| Day 1 | The day you finish the assessment. Weeks count from here. Player → Restart wipes everything and starts a new Day 1. |
+| Wake-up | Tap I'M UP (app, widget, lock-screen notification or pop-up). The morning re-plans around the real time. |
+| Events | Calendar → day → Add an event. Quests move around it; long events excuse training and lessons. |
+| Bonus quests | After-meal walks and ⚡ emergency quests earn XP but never count against you. |
 | Fill-in days | If you started on paper, those days can be ticked off for XP and streaks. They never cause penalties. Neither does Day 1. |
 | Day types | Office, WFH and days off come from your setup (default Mon/Wed/Thu office, Tue/Fri WFH). Tap to switch a day, or pick **Rest / Off** when you're sick or travelling. |
 | Training | Run Tue/Fri/Sun · Strength Wed/Sat · Easy walk Mon/Thu |
@@ -55,9 +63,12 @@ app/src/main/java/com/arise/app/
   data/                  models + JSON storage
   game/Program.kt        schedule, quests, run & strength plans  ← tweak your routine here
   game/Game.kt           XP, levels, streaks, bosses
-  game/Knowledge.kt      daily knowledge cards
-  notify/Reminders.kt    schedule notifications
-  widget/AriseWidget.kt  home-screen widget
+  game/Knowledge.kt      daily knowledge quiz cards
+  game/Profile.kt        the life assessment (branching questions)
+  game/Exercises.kt      strength exercise library and session builder
+  notify/Reminders.kt    schedule notifications, nudges
+  notify/SystemAlert.kt  System pop-ups over other apps / lock screen
+  widget/                home-screen widgets
   ui/                    screens and charts
 ```
 

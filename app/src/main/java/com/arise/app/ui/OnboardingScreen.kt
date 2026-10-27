@@ -79,10 +79,6 @@ fun OnboardingScreen(
         else -> today
     }
 
-    fun pickTime(t: LocalTime, onPick: (LocalTime) -> Unit) {
-        TimePickerDialog(ctx, { _, h, m -> onPick(LocalTime.of(h, m)) }, t.hour, t.minute, false).show()
-    }
-
     fun pickDate(init: LocalDate, min: LocalDate, max: LocalDate, onPick: (LocalDate) -> Unit) {
         DatePickerDialog(ctx, { _, y, m, day -> onPick(LocalDate.of(y, m + 1, day)) }, init.year, init.monthValue - 1, init.dayOfMonth)
             .apply {
@@ -140,65 +136,13 @@ fun OnboardingScreen(
                 Field("Your name", name) { name = it }
             }
             2 -> Panel {
-                Text("Your work week", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text("Tap a day to switch it: Office → WFH → Off.", color = C.Text2, fontSize = 13.sp)
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    DayOfWeek.entries.forEach { day ->
-                        val kind = when (day) {
-                            in office -> 1
-                            in wfh -> 2
-                            else -> 0
-                        }
-                        val color: Color = when (kind) {
-                            1 -> C.Glow
-                            2 -> C.Gold
-                            else -> C.Muted
-                        }
-                        SysButton(
-                            day.getDisplayName(TextStyle.NARROW, Locale.ENGLISH),
-                            selected = kind != 0,
-                            color = color,
-                            small = true,
-                            modifier = Modifier.weight(1f),
-                            onClick = {
-                                when (kind) {
-                                    0 -> office = office + day
-                                    1 -> {
-                                        office = office - day
-                                        wfh = wfh + day
-                                    }
-                                    else -> wfh = wfh - day
-                                }
-                            },
-                        )
-                    }
+                WorkWeekPicker(office, wfh) { o, w ->
+                    office = o
+                    wfh = w
                 }
-                Spacer(Modifier.height(10.dp))
-                Text("🏢 Office: ${dayList(office)}", color = C.Glow, fontSize = 13.sp)
-                Text("🏠 WFH: ${dayList(wfh)}", color = C.Gold, fontSize = 13.sp)
-                Text("🌤 Days off: everything else", color = C.Muted, fontSize = 13.sp)
-                Spacer(Modifier.height(6.dp))
-                Text("For one-off changes (a WFH day, leave), use Player → Calendar.", color = C.Muted, fontSize = 12.sp)
             }
             3 -> Panel {
-                Text("Your wake-up goals", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    "Each morning you tap \"I'm up\" and the System scores how close you were. " +
-                        "Try to keep these within about an hour of each other: a steady body clock helps your hormones and energy.",
-                    color = C.Text2, fontSize = 13.sp,
-                )
-                Spacer(Modifier.height(12.dp))
-                listOf(
-                    Triple("🏢 Office days", wakeOffice, { t: LocalTime -> wakeOffice = t }),
-                    Triple("🏠 WFH days", wakeWfh, { t: LocalTime -> wakeWfh = t }),
-                    Triple("🌤 Days off", wakeOff, { t: LocalTime -> wakeOff = t }),
-                ).forEach { (label, t, set) ->
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
-                        Text(label, modifier = Modifier.width(140.dp))
-                        SysButton(fmt(t), onClick = { pickTime(t, set) })
-                    }
-                }
+                WakeGoalsPicker(wakeOffice, wakeWfh, wakeOff, { wakeOffice = it }, { wakeWfh = it }, { wakeOff = it })
             }
             4 -> Panel {
                 if (!editing) {
@@ -279,12 +223,83 @@ fun OnboardingScreen(
     }
 }
 
-private fun dayList(days: Set<DayOfWeek>): String =
+/** Tap a day to cycle it: Office → WFH → Off. */
+@Composable
+internal fun WorkWeekPicker(office: Set<DayOfWeek>, wfh: Set<DayOfWeek>, onChange: (Set<DayOfWeek>, Set<DayOfWeek>) -> Unit) {
+    Text("Your work week", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    Text("Tap a day to switch it: Office → WFH → Off.", color = C.Text2, fontSize = 13.sp)
+    Spacer(Modifier.height(12.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        DayOfWeek.entries.forEach { day ->
+            val kind = when (day) {
+                in office -> 1
+                in wfh -> 2
+                else -> 0
+            }
+            val color: Color = when (kind) {
+                1 -> C.Glow
+                2 -> C.Gold
+                else -> C.Muted
+            }
+            SysButton(
+                day.getDisplayName(TextStyle.NARROW, Locale.ENGLISH),
+                selected = kind != 0,
+                color = color,
+                small = true,
+                modifier = Modifier.weight(1f),
+                onClick = {
+                    when (kind) {
+                        0 -> onChange(office + day, wfh)
+                        1 -> onChange(office - day, wfh + day)
+                        else -> onChange(office, wfh - day)
+                    }
+                },
+            )
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    Text("🏢 Office: ${dayList(office)}", color = C.Glow, fontSize = 13.sp)
+    Text("🏠 WFH: ${dayList(wfh)}", color = C.Gold, fontSize = 13.sp)
+    Text("🌤 Days off: everything else", color = C.Muted, fontSize = 13.sp)
+    Spacer(Modifier.height(6.dp))
+    Text("For one-off changes (a WFH day, leave, an event), use Player → Calendar.", color = C.Muted, fontSize = 12.sp)
+}
+
+@Composable
+internal fun WakeGoalsPicker(
+    wakeOffice: LocalTime,
+    wakeWfh: LocalTime,
+    wakeOff: LocalTime,
+    setOffice: (LocalTime) -> Unit,
+    setWfh: (LocalTime) -> Unit,
+    setOff: (LocalTime) -> Unit,
+) {
+    val ctx = LocalContext.current
+    Text("Your wake-up goals", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    Text(
+        "Each morning you tap \"I'm up\" and the System scores how close you were, then re-plans the morning around you. " +
+            "Try to keep these within about an hour of each other: a steady body clock helps your hormones and energy.",
+        color = C.Text2, fontSize = 13.sp,
+    )
+    Spacer(Modifier.height(12.dp))
+    listOf(
+        Triple("🏢 Office days", wakeOffice, setOffice),
+        Triple("🏠 WFH days", wakeWfh, setWfh),
+        Triple("🌤 Days off", wakeOff, setOff),
+    ).forEach { (label, t, set) ->
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
+            Text(label, modifier = Modifier.width(140.dp))
+            SysButton(fmt(t), onClick = { TimePickerDialog(ctx, { _, h, m -> set(LocalTime.of(h, m)) }, t.hour, t.minute, false).show() })
+        }
+    }
+}
+
+internal fun dayList(days: Set<DayOfWeek>): String =
     if (days.isEmpty()) "none"
     else days.sorted().joinToString(" ") { it.getDisplayName(TextStyle.SHORT, Locale.ENGLISH) }
 
 @Composable
-private fun Field(label: String, value: String, type: KeyboardType = KeyboardType.Text, onChange: (String) -> Unit) {
+internal fun Field(label: String, value: String, type: KeyboardType = KeyboardType.Text, onChange: (String) -> Unit) {
     OutlinedTextField(
         value = value,
         onValueChange = onChange,

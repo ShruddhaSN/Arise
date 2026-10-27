@@ -14,8 +14,8 @@ android {
         applicationId = "com.arise.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 5
+        versionName = "1.4"
     }
 
     // Fixed signing key so every new build installs as an update (your data stays).

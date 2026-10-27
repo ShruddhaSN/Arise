@@ -80,7 +80,13 @@ object Game {
     }
 
     fun plan(data: AppData, date: LocalDate): DayPlan = memo(data) {
-        planMemo.getOrPut(date) { Program.plan(data.settings, date, typeFor(data, date), runLevel(data, date)) }
+        planMemo.getOrPut(date) {
+            val rec = data.records[date]
+            Program.plan(
+                data.settings, date, typeFor(data, date), runLevel(data, date),
+                PlanCtx(wake = rec?.wake, event = rec?.event, tomorrow = typeFor(data, date.plusDays(1))),
+            )
+        }
     }
 
     /** Full runs needed in a week to move the run plan up. */
@@ -139,8 +145,13 @@ object Game {
                 Done.MIN -> 0.2f
                 null -> 0f
             }
-            Kind.AMOUNT -> ((rec.amounts[q.id] ?: 0.0) / q.target).toFloat().coerceIn(0f, 1f)
+            // A Done on a quest that later became measurable still counts in full.
+            Kind.AMOUNT -> if (rec.done[q.id] == Done.FULL) 1f else ((rec.amounts[q.id] ?: 0.0) / q.target).toFloat().coerceIn(0f, 1f)
             Kind.WAKE -> wakeRatio(q.target, rec.wakeTime)
+            Kind.ROUTINE -> {
+                val need = q.items.filter { !it.optional }
+                if (need.isEmpty()) 0f else need.count { it.id in rec.routine }.toFloat() / need.size
+            }
         }
     }
 
@@ -159,8 +170,9 @@ object Game {
         if (rec.skipped.containsKey(q.id)) return true
         return when (q.kind) {
             Kind.CHECK -> rec.done.containsKey(q.id)
-            Kind.AMOUNT -> (rec.amounts[q.id] ?: 0.0) > 0.0
+            Kind.AMOUNT -> (rec.amounts[q.id] ?: 0.0) > 0.0 || rec.done.containsKey(q.id)
             Kind.WAKE -> rec.wakeTime != null
+            Kind.ROUTINE -> ratio(q, rec) >= 1f
         }
     }
 
@@ -170,12 +182,15 @@ object Game {
         val p = plan(data, date)
         val rec = data.records[date]
         val qs = p.quests
+        val required = qs.filter { !it.optional }
         var xp = qs.sumOf { xpFor(it, rec) }
         if (rec != null) {
             if (rec.done.containsKey(penaltyQuest.id)) xp += penaltyQuest.xp
             if (rec.done.containsKey("notes") && qs.any { it.id == "learn" }) xp += NOTES_XP
+            if (rec.done.containsKey("recall") && qs.any { it.id == "learn" }) xp += NOTES_XP
+            if (rec.done.containsKey(Challenges.weeklyPenaltyQuest.id)) xp += Challenges.weeklyPenaltyQuest.xp
         }
-        return DayStatus(p, qs.count { counts(it, rec) }, qs.size, xp)
+        return DayStatus(p, required.count { counts(it, rec) }, required.size, xp)
     }
 
     /** Never miss twice. Day 1, fill-in days and sick days never cause a penalty. */
@@ -260,6 +275,8 @@ object Game {
     fun lessonFor(data: AppData, date: LocalDate): DayLesson? {
         val start = data.settings.earliest
         if (date < start) return null
+        val topics = Profile.topics(data.settings)
+        val lang = data.settings.language
         val index = mutableMapOf<Topic, Int>()
         val lastSeen = mutableMapOf<Topic, Int>()
         var prev: Topic? = null
@@ -270,7 +287,7 @@ object Game {
             val weekend = Program.isWeekend(type)
             val rnd = java.util.Random(d.toEpochDay() * 7919L + 17L)
             val pool = Topic.entries.filter {
-                it != Topic.WILDCARD && it != prev && Curriculum.lesson(it, index[it] ?: 0) != null
+                it != Topic.WILDCARD && it != prev && it in topics && Curriculum.lesson(it, index[it] ?: 0, lang) != null
             }
             val wild = !weekend && rnd.nextDouble() < 0.14
             val topic = when {
@@ -283,7 +300,7 @@ object Game {
             }
             val i0 = index[topic] ?: 0
             val count = if (weekend && topic != Topic.WILDCARD) 2 else 1
-            val lessons = (0 until count).mapNotNull { Curriculum.lesson(topic, i0 + it) }
+            val lessons = (0 until count).mapNotNull { Curriculum.lesson(topic, i0 + it, lang) }
             if (d == date) return DayLesson(topic, lessons)
 
             val learnQ = plan(data, d).quests.firstOrNull { it.id == "learn" }
@@ -298,8 +315,11 @@ object Game {
 
     // ---- Bosses ----
 
-    private fun countFull(data: AppData, id: String): Int =
-        data.records.values.count { it.done[id] == Done.FULL }
+    /** Days where quest [id] was completed in full. */
+    private fun countFullQuest(data: AppData, id: String): Int = data.records.values.count { r ->
+        val q = plan(data, r.date).quests.firstOrNull { it.id == id }
+        q != null && ratio(q, r) >= 1f
+    }
 
     private fun countLearn(data: AppData): Int = data.records.values.count { r ->
         val q = plan(data, r.date).quests.firstOrNull { it.id == "learn" }
@@ -321,7 +341,7 @@ object Game {
         Boss("perfect", "Perfect Day", "Every quest at 100% in a single day", 150, check = { d, t ->
             longestRunOf(d, t) { day ->
                 val rec = d.records[day]
-                plan(d, day).quests.all { ratio(it, rec) >= 1f }
+                plan(d, day).quests.filter { !it.optional }.all { ratio(it, rec) >= 1f }
             } >= 1
         }),
         Boss("week", "Iron Week", "Reach a 7-day streak", 250, check = { d, t -> bestStreak(d, t) >= 7 }),
@@ -331,7 +351,7 @@ object Game {
         Boss("run5", "The 5-Minute Wall", "Run 5 minutes non-stop", 300, check = { d, _ -> longestRunSec(d) >= 300 }),
         Boss("scholar", "Scholar", "Complete 20 lessons", 300, check = { d, _ -> countLearn(d) >= 20 }),
         Boss("run10", "Ten Unbroken", "Run 10 minutes non-stop", 400, check = { d, _ -> longestRunSec(d) >= 600 }),
-        Boss("iron", "Iron Body", "Complete 12 strength sessions at full", 300, check = { d, _ -> countFull(d, "strength") >= 12 }),
+        Boss("iron", "Iron Body", "Complete 12 strength sessions at full", 300, check = { d, _ -> countFullQuest(d, "strength") >= 12 }),
         Boss("scale2", "Scale Shift", "Weight down 2 kg from your first weigh-in", 300, check = { d, _ -> weightDrop(d) >= 2.0 }),
         Boss("streak21", "21 Days of Steel", "Reach a 21-day streak", 500, check = { d, t -> bestStreak(d, t) >= 21 }),
         Boss("scale5", "Metamorphosis", "Weight down 5 kg from your first weigh-in", 600, check = { d, _ -> weightDrop(d) >= 5.0 }),
@@ -393,14 +413,20 @@ object Game {
                 if (rec.done.containsKey("notes") && s.plan.quests.any { it.id == "learn" }) {
                     statXp[Stat.INT] = statXp.getValue(Stat.INT) + NOTES_XP
                 }
+                if (rec.done.containsKey("recall") && s.plan.quests.any { it.id == "learn" }) {
+                    statXp[Stat.INT] = statXp.getValue(Stat.INT) + NOTES_XP
+                }
             }
             total += s.xp
             if (s.cleared) cleared++
             d = d.plusDays(1)
         }
         val claimed = data.settings.claimedBosses
-        val bossList = bosses.map { b -> b to (if (b.claim) b.id in claimed else b.check(data, today)) }
+        val korean = data.settings.language.equals("Korean", ignoreCase = true)
+        val bossList = bosses.filter { korean || !it.id.startsWith("kr_") }
+            .map { b -> b to (if (b.claim) b.id in claimed else b.check(data, today)) }
         total += bossList.filter { it.second }.sumOf { it.first.xp }
+        total += Challenges.bonusXp(data, today)
 
         var level = 1
         while (levelStart(level + 1) <= total) level++
@@ -420,5 +446,264 @@ object Game {
             clearedDays = cleared,
             bosses = bossList,
         )
+    }
+}
+
+// ---- Achievements: titles with a story, shown once with a full-screen card ----
+
+data class Achievement(
+    val id: String,
+    val name: String,
+    val quote: String,
+    val goal: String,
+    val check: (AppData, LocalDate) -> Boolean,
+)
+
+/** The System's end-of-day report. */
+data class Report(
+    val date: LocalDate,
+    val done: Int,
+    val total: Int,
+    val xp: Int,
+    val cleared: Boolean,
+    val skipped: List<String>,
+    val exSkips: Int,
+    val bonusDone: Int,
+    val bonusTotal: Int,
+    val wakeLine: String?,
+    val tomorrow: String,
+    val unlocks: Int = 0,
+    val focusMin: Int = 0,
+)
+
+object Feats {
+    private fun days(data: AppData, today: LocalDate): Sequence<LocalDate> =
+        generateSequence(data.settings.earliest) { it.plusDays(1) }.takeWhile { it <= today }
+
+    private fun countDays(data: AppData, today: LocalDate, test: (LocalDate) -> Boolean): Int = days(data, today).count(test)
+
+    private fun quest(data: AppData, d: LocalDate, id: String): Quest? = Game.plan(data, d).quests.firstOrNull { it.id == id }
+
+    private fun full(data: AppData, d: LocalDate, id: String): Boolean {
+        val q = quest(data, d, id) ?: return false
+        return Game.ratio(q, data.records[d]) >= 1f
+    }
+
+    private fun longest(data: AppData, today: LocalDate, test: (LocalDate) -> Boolean): Int {
+        var best = 0
+        var cur = 0
+        for (d in days(data, today)) {
+            if (test(d)) {
+                cur++
+                best = maxOf(best, cur)
+            } else {
+                cur = 0
+            }
+        }
+        return best
+    }
+
+    val all: List<Achievement> = listOf(
+        Achievement("first_light", "First Light", "The first gate opens at dawn.", "Wake up on time once") { d, t ->
+            countDays(d, t) { full(d, it, "wake") } >= 1
+        },
+        Achievement("early_riser", "Early Riser", "I wake up as the sun awakes; I join the world in its wakefulness.", "Wake up on time 7 days in a row") { d, t ->
+            longest(d, t) { full(d, it, "wake") } >= 7
+        },
+        Achievement("ritualist", "Ritualist", "Small rituals, done daily, become who you are.", "Finish the morning routine 7 times") { d, t ->
+            countDays(d, t) { full(d, it, "morning") } >= 7
+        },
+        Achievement("moonlit", "Moonlit Discipline", "The night is where tomorrow is won.", "Finish the night routine 7 times") { d, t ->
+            countDays(d, t) { full(d, it, "night") } >= 7
+        },
+        Achievement("wanderer", "Wanderer", "Every walk after a meal is a quiet victory over the spike.", "10 after-meal walks") { d, _ ->
+            d.records.values.sumOf { r -> listOf("walk_lunch", "walk_dinner").count { r.done.containsKey(it) } } >= 10
+        },
+        Achievement("responder", "First Responder", "When the System calls, you answer.", "Clear 5 emergency quests") { d, _ ->
+            d.records.values.sumOf { r -> r.done.keys.count { it.startsWith("emg") } } >= 5
+        },
+        Achievement("redemption", "Redemption", "Falling is allowed. Staying down isn't.", "Complete a penalty quest") { d, _ ->
+            d.records.values.any { it.done.containsKey(Game.penaltyQuest.id) }
+        },
+        Achievement("voice", "The Voice", "What you can say out loud, you truly know.", "Answer 10 recall questions out loud") { d, _ ->
+            d.records.values.sumOf { it.answers.size } >= 10
+        },
+        Achievement("no_retreat", "No Retreat", "Not one rep skipped.", "Finish a full strength session with zero skips") { d, t ->
+            countDays(d, t) { full(d, it, "strength") && d.records[it]?.exSkips.isNullOrEmpty() } >= 1
+        },
+        Achievement("survivor", "Event Survivor", "Even on the big days, the basics held.", "Clear a day that had an event") { d, t ->
+            countDays(d, t) { d.records[it]?.event != null && Game.status(d, it).cleared } >= 1
+        },
+        Achievement("vanished", "Vanished", "They'll notice when you come back.", "Clear 30 days") { d, t ->
+            countDays(d, t) { Game.status(d, it).cleared } >= 30
+        },
+        Achievement("seven", "Seven Days Strong", "One week. The hardest one.", "Reach a 7-day streak") { d, t ->
+            Game.bestStreak(d, t) >= 7
+        },
+        Achievement("focused", "Focused", "Twenty-five minutes of nothing but the task.", "Finish a Pomodoro focus session") { d, _ ->
+            d.records.values.any { (it.amounts["focus_n"] ?: 0.0) >= 1 }
+        },
+        Achievement("deep_diver", "Deep Diver", "Depth is the new superpower.", "Finish 10 focus sessions") { d, _ ->
+            d.records.values.sumOf { it.amounts["focus_n"] ?: 0.0 } >= 10
+        },
+        Achievement("hydrated", "Like Water", "Be water, my friend.", "Hit your water goal 7 days") { d, t ->
+            countDays(d, t) { full(d, it, "water") } >= 7
+        },
+        Achievement("walker", "Ten Thousand Steps of Will", "Every step is a vote for who you're becoming.", "Hit your step goal 7 days") { d, t ->
+            countDays(d, t) { full(d, it, "steps") } >= 7
+        },
+        Achievement("sealed", "Unshakeable", "The scroll called. You didn't answer.", "7 days with no emergency unlocks of blocked apps") { d, t ->
+            d.settings.blocked.isNotEmpty() && countDays(d, t) { (d.records[it]?.amounts?.get("unlocks") ?: 0.0) == 0.0 && d.records[it] != null } >= 7
+        },
+        Achievement("iron_week", "Iron Will", "Seven days. Not one exception.", "Clear a weekly challenge") { d, t ->
+            d.settings.challenges.any { it.kind == com.arise.app.data.ChallengeKind.WEEKLY && Challenges.cleared(d, it, t) }
+        },
+        Achievement("apprentice", "Apprentice", "A month ago you couldn't. Now you can.", "Clear a monthly skill challenge") { d, t ->
+            d.settings.challenges.any { it.kind == com.arise.app.data.ChallengeKind.SKILL && Challenges.cleared(d, it, t) }
+        },
+        Achievement("reforged", "Reforged", "You chose the hard thing, and finished it.", "Clear a body challenge") { d, t ->
+            d.settings.challenges.any { it.kind == com.arise.app.data.ChallengeKind.BODY && Challenges.cleared(d, it, t) }
+        },
+        Achievement("season_clear", "Season Clear", "You said you would. You did.", "Reach the last day of a challenge") { d, t ->
+            d.settings.season > 1 || Season.over(d.settings, t)
+        },
+    )
+
+    /** Your ratings now: the Day 1 assessment plus everything you've done since. */
+    fun ratingsNow(data: AppData, p: Progress): List<Profile.Rating> {
+        val day1 = Profile.ratings(data.settings.profile, data.settings.challengeDays.takeIf { it > 0 } ?: 66)
+        fun gain(label: String): Int = when (label) {
+            "Strength" -> (p.stats.getValue(Stat.STR) - 10) * 2 + (p.stats.getValue(Stat.AGI) - 10)
+            "Vitality" -> (p.stats.getValue(Stat.VIT) - 10) * 2 + (p.stats.getValue(Stat.FLX) - 10)
+            "Discipline" -> (p.discipline - 10) * 2
+            "Focus" -> (p.stats.getValue(Stat.INT) - 10) + p.streak / 2
+            "Wisdom" -> (p.stats.getValue(Stat.INT) - 10) * 2
+            else -> 0
+        }
+        val parts = day1.drop(1).map { it.copy(now = (it.now + gain(it.label)).coerceAtMost(99)) }
+        return listOf(day1.first().copy(now = parts.sumOf { it.now } / parts.size)) + parts
+    }
+
+    /** One before/after line: first week vs the last 7 days. */
+    data class Growth(val label: String, val icon: String, val before: String, val after: String, val better: Boolean?)
+
+    /**
+     * Before vs after. Compares your first 7 tracked days with the last 7. Needs 10+ days, otherwise
+     * the two windows overlap and say nothing.
+     */
+    fun growth(data: AppData, today: LocalDate): List<Growth> {
+        val start = data.settings.earliest
+        val days = generateSequence(start) { it.plusDays(1) }.takeWhile { it <= today }.toList()
+        if (days.size < 10) return emptyList()
+        val first = days.take(7)
+        val last = days.takeLast(7)
+        fun avg(ds: List<LocalDate>, f: (DayRecord?) -> Double?): Double? = ds.mapNotNull { f(data.records[it]) }.takeIf { it.isNotEmpty() }?.average()
+        fun minutesOf(t: String?): Double? = t?.let { runCatching { LocalTime.parse(it) }.getOrNull() }?.let { (it.toSecondOfDay() / 60).toDouble() }
+        fun bedScale(t: String?): Double? = minutesOf(t)?.let { if (it < 12 * 60) it + 24 * 60 else it }
+        fun clock(m: Double): String = fmt(LocalTime.of(((m.toInt() / 60) % 24), m.toInt() % 60))
+        val out = mutableListOf<Growth>()
+        fun add(label: String, icon: String, f: (DayRecord?) -> Double?, show: (Double) -> String, lowerIsBetter: Boolean) {
+            val a = avg(first, f) ?: return
+            val b = avg(last, f) ?: return
+            out += Growth(label, icon, show(a), show(b), if (a == b) null else (b < a) == lowerIsBetter)
+        }
+        add("Wake-up time", "☀", { minutesOf(it?.wakeTime) }, ::clock, true)
+        add("Lights off", "🌙", { bedScale(it?.bedTime) }, ::clock, true)
+        add("Water a day", "💧", { it?.amounts?.get("water") }, { "%.1f L".format(it) }, false)
+        add("Steps a day", "👣", { it?.amounts?.get("steps") }, { "%,d".format(it.toInt()) }, false)
+        add("Focus a day", "🎯", { it?.amounts?.get("focus") ?: 0.0 }, { "${it.toInt()} min" }, false)
+        val qa = first.map { Game.status(data, it).ratio }.average()
+        val qb = last.map { Game.status(data, it).ratio }.average()
+        out += Growth("Quests done", "⚔", "${(qa * 100).toInt()}%", "${(qb * 100).toInt()}%", if (qa == qb) null else qb > qa)
+        val ws = data.records.values.filter { it.weight != null }.sortedBy { it.date }
+        if (ws.size >= 2) {
+            val w0 = ws.first().weight!!
+            val w1 = ws.last().weight!!
+            out += Growth("Weight", "⚖", "%.1f kg".format(w0), "%.1f kg".format(w1), if (w0 == w1) null else w1 < w0)
+        }
+        return out
+    }
+
+    /** Lifetime totals for the insights screen. */
+    fun totals(data: AppData, today: LocalDate): Map<String, Int> {
+        val days = generateSequence(data.settings.earliest) { it.plusDays(1) }.takeWhile { it <= today }
+        return mapOf(
+            "Quests done" to days.sumOf { Game.status(data, it).doneCount },
+            "Focus minutes" to data.records.values.sumOf { (it.amounts["focus"] ?: 0.0).toInt() },
+            "Recall answers" to data.records.values.sumOf { it.answers.size },
+            "Skips" to data.records.values.sumOf { it.skipped.size + it.exSkips.size },
+        )
+    }
+
+    fun unlocked(data: AppData, today: LocalDate): List<Achievement> = all.filter { it.check(data, today) }
+
+    fun lateText(minutes: Int): String = when {
+        minutes <= 0 -> "on time"
+        minutes < 60 -> "$minutes min late"
+        else -> "${minutes / 60}h ${minutes % 60}m late"
+    }
+
+    /** What the System says when you tap "I'm up": score, what moved, what unlocked. */
+    fun wakeLines(data: AppData, date: LocalDate): List<String> {
+        val rec = data.records[date] ?: return emptyList()
+        val w = rec.wake ?: return emptyList()
+        val plan = Game.plan(data, date)
+        val q = plan.quests.firstOrNull { it.kind == Kind.WAKE } ?: return emptyList()
+        val goal = java.time.LocalTime.ofSecondOfDay(q.target.toLong() * 60)
+        val late = w.toSecondOfDay() / 60 - q.target.toInt()
+        return buildList {
+            add("Awake at ${fmt(w)}. Goal ${fmt(goal)}: ${lateText(late)}.")
+            add("Rise: +${Game.xpFor(q, rec)} VIT XP")
+            addAll(plan.notes)
+            plan.quests.firstOrNull { it.id == "morning" }?.let { add("Morning routine unlocked: ${it.items.count { i -> !i.optional }} steps.") }
+            if (Game.penaltyActive(data, date)) add("A penalty quest is waiting. Clear it today.")
+        }
+    }
+
+    fun report(data: AppData, date: LocalDate): Report {
+        val st = Game.status(data, date)
+        val rec = data.records[date]
+        val plan = st.plan
+        val bonus = plan.quests.filter { it.optional }
+        val skipped = plan.quests.mapNotNull { q -> rec?.skipped?.get(q.id)?.let { "${q.title} (${it.label.lowercase()})" } }
+        val wakeQ = plan.quests.firstOrNull { it.kind == Kind.WAKE }
+        val wakeLine = if (wakeQ != null && rec?.wake != null) {
+            val late = rec.wake!!.toSecondOfDay() / 60 - wakeQ.target.toInt()
+            "Woke at ${fmt(rec.wake!!)}" + when {
+                late <= 0 -> " · on time"
+                else -> " · ${late / 60}h ${late % 60}m late"
+            }
+        } else null
+        val tPlan = Game.plan(data, date.plusDays(1))
+        val first = tPlan.blocks.firstOrNull { it.quest != null }
+        return Report(
+            date = date,
+            done = st.doneCount,
+            total = st.total,
+            xp = st.xp,
+            cleared = st.cleared,
+            skipped = skipped,
+            exSkips = rec?.exSkips?.size ?: 0,
+            bonusDone = bonus.count { Game.counts(it, rec) },
+            bonusTotal = bonus.size,
+            wakeLine = wakeLine,
+            tomorrow = first?.let { "${fmt(it.time)} · ${it.quest?.title}" } ?: "Rest",
+            unlocks = (rec?.amounts?.get("unlocks") ?: 0.0).toInt(),
+            focusMin = (rec?.amounts?.get("focus") ?: 0.0).toInt(),
+        )
+    }
+}
+
+/** The challenge: Day X of N, and what happens at the end. */
+object Season {
+    fun day(s: com.arise.app.data.Settings, date: LocalDate): Int =
+        (java.time.temporal.ChronoUnit.DAYS.between(s.currentSeasonStart, date) + 1).toInt()
+
+    /** Past the last day of a challenge with an end. */
+    fun over(s: com.arise.app.data.Settings, today: LocalDate): Boolean = s.challengeDays > 0 && day(s, today) > s.challengeDays
+
+    fun label(s: com.arise.app.data.Settings, date: LocalDate): String {
+        val d = day(s, date)
+        return if (s.challengeDays > 0) "Day $d / ${s.challengeDays}" else "Day $d"
     }
 }

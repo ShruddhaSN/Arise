@@ -12,7 +12,9 @@ data class LaterChoice(val options: List<SlotOption>, val note: String?)
 
 object Slots {
     /** These only make sense at their own time, so they can't be moved. */
-    val FIXED = setOf("wake", "phonefree", "sleep", "weigh")
+    val FIXED = setOf("wake", "phonefree", "sleep", "weigh", "morning", "night")
+
+    fun fixed(id: String): Boolean = id in FIXED || id.startsWith("emg")
 
     private val LATEST_ANY = LocalTime.of(22, 0)
     private val LATEST_WORKOUT = LocalTime.of(20, 0)

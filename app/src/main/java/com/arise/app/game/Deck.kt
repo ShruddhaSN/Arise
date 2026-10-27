@@ -17,11 +17,23 @@ object Deck {
     private fun millis(date: LocalDate, t: LocalTime): Long =
         LocalDateTime.of(date, t).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
 
+    /** Emergency quests vanish when their time limit runs out. */
+    fun expired(b: Block, now: LocalTime): Boolean {
+        val q = b.quest ?: return false
+        val limit = q.limitMin ?: return false
+        return q.expires && now.isAfter(b.time.plusMinutes(limit.toLong()))
+    }
+
     private fun due(data: AppData, date: LocalDate, now: LocalTime): List<Block> {
         val rec = data.records[date]
-        return Game.plan(data, date).blocks.filter { b ->
+        val plan = Game.plan(data, date)
+        val wakeQ = plan.quests.firstOrNull { it.kind == Kind.WAKE }
+        val awake = wakeQ == null || Game.settled(wakeQ, rec)
+        return plan.blocks.filter { b ->
             val q = b.quest
-            q != null && !b.time.isAfter(now) && !Game.settled(q, rec)
+            q != null && !b.time.isAfter(now) && !Game.settled(q, rec) && !expired(b, now) &&
+                // The morning routine and phone-free quest unlock with "I'm up".
+                (awake || (q.id != "morning" && q.id != "phonefree"))
         }
     }
 

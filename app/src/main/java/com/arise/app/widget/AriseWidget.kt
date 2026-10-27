@@ -12,6 +12,7 @@ import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.LinearProgressIndicator
+import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.background
@@ -42,6 +43,8 @@ private data class Snap(
     val streak: Int,
     val next: String,
     val penalty: Boolean,
+    /** Today's wake-up hasn't been tapped yet, and it's past the goal. */
+    val wakePending: Boolean = false,
 )
 
 private fun snapshot(ctx: Context): Snap {
@@ -69,6 +72,9 @@ private fun snapshot(ctx: Context): Snap {
         streak = p.streak,
         next = nextText,
         penalty = Game.penaltyActive(data, today) && data.day(today).done[Game.penaltyQuest.id] == null,
+        wakePending = s.plan.blocks.any { b ->
+            b.quest?.kind == com.arise.app.game.Kind.WAKE && !b.time.isAfter(now) && data.day(today).wakeTime == null && now.isBefore(LocalTime.of(14, 0))
+        },
     )
 }
 
@@ -77,6 +83,7 @@ private val Glow = Color(0xFF4DA3FF)
 private val TextMain = Color(0xFFF0EFEC)
 private val TextDim = Color(0xFF9AA3B5)
 private val Danger = Color(0xFFE66767)
+private val Good = Color(0xFF3FBF7F)
 
 class AriseWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
@@ -116,6 +123,10 @@ private fun WidgetBody(s: Snap) {
             maxLines = 2,
             style = TextStyle(color = ColorProvider(TextMain), fontSize = 15.sp, fontWeight = FontWeight.Medium),
         )
+        if (s.wakePending) {
+            Spacer(GlanceModifier.height(6.dp))
+            WidgetButton("I'M UP", Good, actionRunCallback<WakeCallback>())
+        }
         Spacer(GlanceModifier.height(10.dp))
         LinearProgressIndicator(
             progress = if (s.total == 0) 0f else s.done.toFloat() / s.total,

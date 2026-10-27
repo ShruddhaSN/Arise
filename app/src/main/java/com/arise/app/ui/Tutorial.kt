@@ -53,13 +53,14 @@ data class TutorialStep(val key: String?, val title: String, val text: String)
 
 fun tutorialSteps(name: String) = listOf(
     TutorialStep(null, "[SYSTEM] Welcome, $name", "A 30-second tour of your System. Tap anywhere to continue."),
-    TutorialStep("header", "Your status", "Date, week and day type. ‹ goes back to fill in past days. › peeks at upcoming days (locked until they arrive). Below: your level, XP and streak."),
-    TutorialStep("allday", "All-day quests", "Water, steps and Korean. Tap + as you go, or tap the number to type the exact amount. Partial amounts earn partial XP."),
-    TutorialStep("deck", "The NOW card", "One quest at a time. Done → it flies away with XP. Later → it goes to the back of the deck. Not today → asks why, so we can spot patterns."),
-    TutorialStep("deck", "Min: the tired-day version", "Min gives 20% XP and protects your streak. You get only 2 per week, so use them when you really need them."),
+    TutorialStep("header", "The daily quest", "Countdown to midnight, your wake time, and how many quests you've cleared. Tap I'M UP the moment you get out of bed: the morning re-plans around your real wake time. ‹ › move between days."),
+    TutorialStep("allday", "All-day quests", "Water, steps and your language. Tap + as you go, or tap the number to type the exact amount. Partial amounts earn partial XP."),
+    TutorialStep("deck", "Cards due now", "Every quest that's due sits here. Swipe left and right to see them all. Done → XP. Later → back of the deck. Not today → the System asks why and counts it."),
+    TutorialStep("deck", "Routines", "Morning and night routines open a checklist. Tick each step; when everything is done, it completes itself."),
+    TutorialStep("deck", "Emergency quests", "⚡ They appear at random times. 30 minutes to do something small. Bonus XP, no penalty."),
     TutorialStep("upnext", "Up next", "Cards join the deck when their time arrives. This shows what's coming."),
-    TutorialStep("fullday", "See full day", "The whole schedule as a list, if you want to plan ahead."),
-    TutorialStep("tabs", "Your other tabs", "Train: run coach and guided timers. Log: sleep, weight, protein and charts. Player: stats, bosses, calendar and settings."),
+    TutorialStep("fullday", "Tabs", "To-do is the deck. Done and Skipped show what you finished or passed on. Full day is the whole schedule."),
+    TutorialStep("tabs", "Your other tabs", "Train: run and strength coach with voice. Tools: Pomodoro and the screen blocker. Log: growth, sleep, weight, charts. Player: rating, titles, calendar (events!) and settings."),
     TutorialStep(null, "The rules", "Clear 70% of today's quests to keep your streak. Miss a day and tomorrow starts with a penalty quest. Never miss twice.\n\nARISE."),
 )
 

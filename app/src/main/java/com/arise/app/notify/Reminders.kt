@@ -19,9 +19,15 @@ import com.arise.app.R
 import com.arise.app.data.AppData
 import com.arise.app.data.Store
 import com.arise.app.game.Block
+import com.arise.app.game.Feats
 import com.arise.app.game.Game
+import com.arise.app.game.Kind
 import com.arise.app.game.Special
+import com.arise.app.game.fmt
+import com.arise.app.widget.CountdownWidget
 import com.arise.app.widget.AriseWidget
+import com.arise.app.widget.QuestListWidget
+import com.arise.app.widget.StatusWidget
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -31,22 +37,27 @@ import java.time.LocalTime
 import java.time.ZoneId
 
 /**
- * Only one alarm is ever pending: the next schedule block. When it fires, we show the
- * notification and schedule the one after it.
+ * Only one alarm is ever pending: the next thing on the schedule (a block, a card back from Later,
+ * or a single follow-up nudge). When it fires, we show it and schedule the one after.
  */
 object Reminders {
     const val CHANNEL = "arise_system"
     private const val REQ = 4242
+    const val WAKE_ID = 5151
+    /** A quest still open this long after its time gets one reminder. Never more. */
+    private const val NUDGE_MIN = 20L
 
     fun createChannel(ctx: Context) {
         val ch = NotificationChannel(CHANNEL, "System quests", NotificationManager.IMPORTANCE_HIGH).apply {
             description = "Daily quest reminders from the System"
         }
         ctx.getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+        SystemAlert.createChannel(ctx)
     }
 
-    /** Reschedule the next reminder and redraw the widget. Call after any data change. */
+    /** Reschedule the next reminder and redraw the widgets. Call after any data change. */
     fun refresh(ctx: Context) {
+        Blocker.sync(ctx, Store.load(ctx))
         scheduleNext(ctx, LocalDateTime.now())
         updateWidget(ctx)
     }
@@ -55,33 +66,56 @@ object Reminders {
         val app = ctx.applicationContext
         CoroutineScope(Dispatchers.Default).launch {
             try {
-                AriseWidget().updateAll(app)
+                runCatching { AriseWidget().updateAll(app) }
+                runCatching { StatusWidget().updateAll(app) }
+                runCatching { QuestListWidget().updateAll(app) }
+                runCatching { CountdownWidget().updateAll(app) }
             } finally {
                 onDone()
             }
         }
     }
 
-    /** The next moment to notify: a schedule block, or a card coming back from "Later". Third = deferred quest id. */
-    private fun nextEvent(data: AppData, from: LocalDateTime): Triple<LocalDateTime, Block?, String?>? {
+    /** The wake alert stays on the lock screen until you're up. */
+    fun clearWake(ctx: Context) {
+        NotificationManagerCompat.from(ctx).cancel(WAKE_ID)
+    }
+
+    private data class Next(val at: LocalDateTime, val blockTime: LocalTime?, val deferredId: String?, val nudge: Boolean)
+
+    private fun nudges(b: Block): Boolean {
+        val q = b.quest ?: return false
+        return b.notify && !q.optional && !q.expires && q.kind != Kind.WAKE && q.limitMin != null
+    }
+
+    private fun nextEvent(data: AppData, from: LocalDateTime): Next? {
         val zone = ZoneId.systemDefault()
-        val returns = data.records[from.toLocalDate()]?.deferred.orEmpty().mapNotNull { (id, ms) ->
+        val today = from.toLocalDate()
+        val returns = data.records[today]?.deferred.orEmpty().mapNotNull { (id, ms) ->
             val at = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalDateTime()
-            if (at.isAfter(from)) Triple(at, null as Block?, id as String?) else null
+            if (at.isAfter(from)) Next(at, null, id, false) else null
         }
-        var block: Triple<LocalDateTime, Block?, String?>? = null
+        val candidates = mutableListOf<Next>()
+        candidates += returns
+        // One nudge per open quest, today only.
+        val rec = data.records[today]
+        Game.plan(data, today).blocks.filter { nudges(it) && !Game.settled(it.quest!!, rec) && rec?.deferred?.containsKey(it.quest.id) != true }
+            .map { LocalDateTime.of(today, it.time).plusMinutes(NUDGE_MIN) to it.time }
+            .filter { it.first.isAfter(from) && it.first.toLocalDate() == today }
+            .minByOrNull { it.first }
+            ?.let { candidates += Next(it.first, it.second, null, true) }
         loop@ for (d in 0L..7L) {
-            val date = from.toLocalDate().plusDays(d)
+            val date = today.plusDays(d)
             for (b in Game.plan(data, date).blocks) {
                 if (!b.notify) continue
                 val at = LocalDateTime.of(date, b.time)
                 if (at.isAfter(from)) {
-                    block = Triple(at, b, null)
+                    candidates += Next(at, b.time, null, false)
                     break@loop
                 }
             }
         }
-        return (returns + listOfNotNull(block)).minByOrNull { it.first }
+        return candidates.minByOrNull { it.at }
     }
 
     fun scheduleNext(ctx: Context, from: LocalDateTime) {
@@ -90,13 +124,15 @@ object Reminders {
         val base = Intent(ctx, ReminderReceiver::class.java)
         am.cancel(PendingIntent.getBroadcast(ctx, REQ, base, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
         if (!data.settings.notifications || !data.settings.onboarded) return
-        val (at, _, deferredId) = nextEvent(data, from) ?: return
+        val n = nextEvent(data, from) ?: return
         val intent = Intent(ctx, ReminderReceiver::class.java)
-            .putExtra("date", at.toLocalDate().toString())
-            .putExtra("time", at.toLocalTime().toString())
-            .putExtra("deferred", deferredId)
+            .putExtra("date", n.at.toLocalDate().toString())
+            .putExtra("time", (n.blockTime ?: n.at.toLocalTime()).toString())
+            .putExtra("at", n.at.toString())
+            .putExtra("deferred", n.deferredId)
+            .putExtra("nudge", n.nudge)
         val pi = PendingIntent.getBroadcast(ctx, REQ, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val millis = at.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val millis = n.at.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
         if (Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()) {
             am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis, pi)
         } else {
@@ -104,78 +140,116 @@ object Reminders {
         }
     }
 
-    @SuppressLint("MissingPermission")
-    fun show(ctx: Context, date: LocalDate, time: LocalTime, deferredId: String? = null) {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) return
+    private fun allowed(ctx: Context): Boolean =
+        Build.VERSION.SDK_INT < 33 || ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
+    fun show(ctx: Context, date: LocalDate, time: LocalTime, deferredId: String? = null, nudge: Boolean = false) {
+        if (!allowed(ctx)) return
         val data = Store.load(ctx)
         val plan = Game.plan(data, date)
         val rec = data.records[date]
+        val name = data.settings.name
         if (deferredId != null) {
             val dq = plan.quests.firstOrNull { it.id == deferredId } ?: return
             if (Game.settled(dq, rec)) return
-            post(ctx, "[SYSTEM] Rescheduled quest: ${dq.title}", "It's time. ${dq.full}", time.toSecondOfDay() + 1)
+            post(ctx, "[SYSTEM] Rescheduled quest: ${dq.title}", "It's time. ${dq.full}", time.toSecondOfDay() + 1, doneId = dq.id.takeIf { dq.kind == Kind.CHECK }, date = date)
             return
         }
         val b = plan.blocks.firstOrNull { it.time == time && it.notify } ?: return
         val q = b.quest
         if (q != null && Game.settled(q, rec)) return // already handled, no nagging
-        val name = data.settings.name
 
-        val title: String
-        val text: String
+        if (nudge && q != null) {
+            post(
+                ctx, "[SYSTEM] ${q.title} is still waiting",
+                "Started ${fmt(time)}. Do it now, or tap Later / Not today in the app. This is the only reminder.",
+                time.toSecondOfDay() + 2, doneId = q.id.takeIf { q.kind == Kind.CHECK }, date = date,
+            )
+            return
+        }
+
         when {
             b.special == Special.CHECK_IN -> {
-                val left = plan.quests.filter { !Game.counts(it, rec) && rec?.skipped?.containsKey(it.id) != true }
-                if (left.isEmpty()) {
-                    title = "[SYSTEM] All quests cleared"
-                    text = "Flawless. Rest well, $name."
-                } else {
-                    title = "[SYSTEM] ${left.size} quest${if (left.size == 1) "" else "s"} remain"
-                    text = left.joinToString(" · ") { it.title }
-                }
+                val r = Feats.report(data, date)
+                val title = if (r.cleared) "[SYSTEM] Daily report · cleared" else "[SYSTEM] Daily report"
+                val text = "Quests ${r.done}/${r.total} · +${r.xp} XP" +
+                    (if (r.cleared) ". The streak lives, $name." else ". ${plan.quests.count { !it.optional && !Game.counts(it, rec) && rec?.skipped?.containsKey(it.id) != true }} still open. Clear them before midnight.")
+                post(ctx, title, text, time.toSecondOfDay())
+                SystemAlert.show(ctx, SystemAlert.REPORT, title.removePrefix("[SYSTEM] ").uppercase(), text, date = date)
             }
             b.special == Special.RESCUE -> {
                 // Only speak up if the morning slipped: 2+ morning quests still open.
-                val open = plan.blocks.filter { it.time < time && it.quest != null && !Game.settled(it.quest, rec) }
+                val open = plan.blocks.filter { it.time < time && it.quest != null && !it.quest.optional && !Game.settled(it.quest, rec) }
                 if (open.size < 2) return
-                title = "[SYSTEM] The day can still be cleared"
-                text = "Next quest: ${open.first().quest!!.title}. One card at a time, $name."
+                post(ctx, "[SYSTEM] The day can still be cleared", "Next quest: ${open.first().quest!!.title}. One card at a time, $name.", time.toSecondOfDay())
+            }
+            q != null && q.kind == Kind.WAKE -> {
+                postWake(ctx, q.title, "Player, wake up. Tap I'M UP the moment you're out of bed. The Daily Quest has arrived.")
+                val penalty = Game.penaltyActive(data, date)
+                SystemAlert.show(
+                    ctx, SystemAlert.WAKE, "THE DAILY QUEST HAS ARRIVED",
+                    "Goal ${fmt(time)}. Get out of bed, then tap I'M UP. Phone down for 30 minutes after." +
+                        if (penalty) "\nA penalty quest is waiting from yesterday." else "",
+                    date = date,
+                )
+            }
+            q != null && q.expires -> {
+                post(ctx, "[SYSTEM] ⚡ ${q.title}", "${q.full}\nReward: +${q.xp} ${q.stat.label} XP", time.toSecondOfDay(), doneId = q.id, date = date)
+                SystemAlert.show(ctx, SystemAlert.EMERGENCY, q.title, "${q.full}\nReward: +${q.xp} ${q.stat.label} XP", questId = q.id, date = date)
             }
             q != null -> {
-                title = "[SYSTEM] Quest: ${q.title}"
-                text = "${q.full}\nReward: +${q.xp} ${q.stat.label} XP"
+                post(
+                    ctx, "[SYSTEM] Quest: ${q.title}", "${q.full}\nReward: +${q.xp} ${q.stat.label} XP", time.toSecondOfDay(),
+                    doneId = q.id.takeIf { q.kind == Kind.CHECK }, date = date,
+                )
             }
-            else -> {
-                title = "[SYSTEM] ${b.title}"
-                text = b.detail
-            }
+            else -> post(ctx, "[SYSTEM] ${b.title}", b.detail, time.toSecondOfDay())
         }
-
-        post(ctx, title, text, time.toSecondOfDay())
     }
 
+    private fun openApp(ctx: Context): PendingIntent = PendingIntent.getActivity(
+        ctx, 0, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    /** A notification. [doneId] adds a "✓ Done" button that ticks the quest without opening the app. */
     @SuppressLint("MissingPermission")
-    private fun post(ctx: Context, title: String, text: String, id: Int) {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) return
-        val open = PendingIntent.getActivity(
-            ctx, 0, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+    private fun post(ctx: Context, title: String, text: String, id: Int, doneId: String? = null, date: LocalDate? = null) {
+        if (!allowed(ctx)) return
         val n = NotificationCompat.Builder(ctx, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_arise)
             .setColor(0xFF4DA3FF.toInt())
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setContentIntent(open)
+            .setContentIntent(openApp(ctx))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+        if (doneId != null && date != null) {
+            n.addAction(0, "✓ Done", QuestActionReceiver.done(ctx, doneId, date, id))
+        }
+        NotificationManagerCompat.from(ctx).notify(id, n.build())
+    }
+
+    /** The wake alert: stays on the lock screen with an I'M UP button until you're up. */
+    @SuppressLint("MissingPermission")
+    private fun postWake(ctx: Context, title: String, text: String) {
+        if (!allowed(ctx)) return
+        val n = NotificationCompat.Builder(ctx, CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_arise)
+            .setColor(0xFF4DA3FF.toInt())
+            .setContentTitle("[SYSTEM] $title")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(openApp(ctx))
+            .setOngoing(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setTimeoutAfter(5 * 60 * 60 * 1000L)
+            .addAction(0, "I'M UP", QuestActionReceiver.wake(ctx))
             .build()
-        NotificationManagerCompat.from(ctx).notify(id, n)
+        NotificationManagerCompat.from(ctx).notify(WAKE_ID, n)
     }
 }
 
@@ -183,10 +257,11 @@ class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         val date = intent.getStringExtra("date")?.let(LocalDate::parse)
         val time = intent.getStringExtra("time")?.let(LocalTime::parse)
+        val at = intent.getStringExtra("at")?.let(LocalDateTime::parse)
         var from = LocalDateTime.now()
         if (date != null && time != null) {
-            Reminders.show(ctx, date, time, intent.getStringExtra("deferred"))
-            val due = LocalDateTime.of(date, time)
+            Reminders.show(ctx, date, time, intent.getStringExtra("deferred"), intent.getBooleanExtra("nudge", false))
+            val due = at ?: LocalDateTime.of(date, time)
             if (due.isAfter(from)) from = due
         }
         Reminders.scheduleNext(ctx, from)
