@@ -13,15 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Uploaded Arise.zip from a phone? Unpack it over the code before building.
-      - name: Unpack Arise.zip if present
-        run: |
-          if [ -f Arise.zip ]; then
-            rm -rf /tmp/src && mkdir -p /tmp/src
-            unzip -q -o Arise.zip -d /tmp/src
-            if [ -d /tmp/src/Arise ]; then cp -r /tmp/src/Arise/. . ; else cp -r /tmp/src/. . ; fi
-            echo "Built from Arise.zip"
-          fi
 
       - uses: actions/setup-java@v4
         with:
