@@ -1,5 +1,67 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
-    id("com.android.application") version "8.7.3" apply false
-    id("org.jetbrains.kotlin.android") version "2.1.0" apply false
-    id("org.jetbrains.kotlin.plugin.compose") version "2.1.0" apply false
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+
+android {
+    namespace = "com.arise.app"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "com.arise.app"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 6
+        versionName = "1.5"
+    }
+
+    // Fixed signing key so every new build installs as an update (your data stays).
+    signingConfigs {
+        create("arise") {
+            storeFile = file("arise.keystore")
+            storePassword = "arisearise"
+            keyAlias = "arise"
+            keyPassword = "arisearise"
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("arise")
+        }
+        release {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("arise")
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        compose = true
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
+    }
+}
+
+dependencies {
+    val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
+    implementation(composeBom)
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.glance:glance-appwidget:1.1.1")
+    implementation("androidx.health.connect:connect-client:1.1.0-alpha10")
 }
