@@ -64,7 +64,6 @@ fun ChallengesScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Uni
     val s = data.settings
     var offer by remember { mutableStateOf<Offer?>(null) }
     var quitting by remember { mutableStateOf<Taken?>(null) }
-    var allWeekly by remember { mutableStateOf(false) }
 
     val running = s.challenges.filter { Challenges.running(it, today) }
     // Finished in the last 7 days, or a kept skill: still worth showing.
@@ -108,26 +107,15 @@ fun ChallengesScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Uni
 
         // ---- Weekly ----
         SysLabel("Weekly challenge · every day counts", C.Gold)
-        if (has(ChallengeKind.WEEKLY)) {
-            Text("One weekly challenge at a time. Finish this one first.", color = C.Muted, fontSize = 12.sp)
-        } else {
-            val list = if (allWeekly) Challenges.weekly else Challenges.offers(today)
-            list.forEach { w ->
-                Panel(accent = C.Gold) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(w.icon, fontSize = 24.sp, modifier = Modifier.width(40.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(w.title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                            Text(w.rule, color = C.Text2, fontSize = 12.sp)
-                        }
-                        SysButton("Take it", small = true, color = C.Gold, onClick = {
-                            offer = Offer(ChallengeKind.WEEKLY, w.id, w.title, false, LocalTime.of(21, 30))
-                        })
-                    }
-                }
-            }
-            SysButton(if (allWeekly) "Show this week's 3 picks" else "See all ${Challenges.weekly.size} weekly challenges", small = true, color = C.Muted,
-                onClick = { allWeekly = !allWeekly })
+        run {
+            val next = Challenges.weekFirstDay(s, today).plusDays(7)
+            val nextDay = java.time.temporal.ChronoUnit.DAYS.between(s.currentSeasonStart, next) + 1
+            Text(
+                "The System assigns one at random every week (day 1, 8, 15…), no repeats until you've done them all. " +
+                    "+${Challenges.WEEKLY_DAY_XP} XP per day kept, ${Challenges.WEEKLY_XP} for a perfect week. " +
+                    "Next one: day $nextDay (${next.format(java.time.format.DateTimeFormatter.ofPattern("EEE d MMM"))}).",
+                color = C.Muted, fontSize = 12.sp,
+            )
         }
 
         // ---- Skills ----
@@ -202,7 +190,7 @@ fun ChallengesScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Uni
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         when (o.kind) {
-                            ChallengeKind.WEEKLY -> "The next 7 days. Every night at 9:30 PM the System asks: kept it today? +${Challenges.WEEKLY_DAY_XP} XP per day kept, ${Challenges.WEEKLY_XP} for a perfect week. Fewer than ${Challenges.WEEKLY_PENALTY_BELOW} days = a penalty quest."
+                            ChallengeKind.WEEKLY -> ""
                             ChallengeKind.SKILL -> "30 days, a daily practice quest. After the month, spaced recall keeps it: do it from memory on day 1, 3, 7, 14, 30, 60, then monthly (you can switch that off)."
                             ChallengeKind.BODY -> "A guided session every day, with a follow-along video. Optional: give up any time, no penalty."
                         },
@@ -276,7 +264,7 @@ private fun ActiveCard(
     val missed = marks.count { it == Mark.SLIPPED || it == Mark.MISSED }
     val accent = when {
         cleared -> C.Gold
-        t.kind == ChallengeKind.WEEKLY && missed >= 7 - Challenges.WEEKLY_PENALTY_BELOW + 1 -> C.Danger
+        t.kind == ChallengeKind.WEEKLY && missed >= Challenges.WEEKLY_PENALTY_MISSED -> C.Danger
         t.kind == ChallengeKind.BODY -> C.RunHot
         else -> C.Glow
     }
@@ -305,9 +293,9 @@ private fun ActiveCard(
         Spacer(Modifier.height(6.dp))
         Text(
             if (t.kind == ChallengeKind.WEEKLY) {
-                "Kept $kept of 7 · " + when {
+                "Kept $kept of $len · " + when {
                     over && kept >= 7 -> "PERFECT WEEK +${Challenges.WEEKLY_XP} XP"
-                    over && kept < Challenges.WEEKLY_PENALTY_BELOW -> "+${Challenges.weeklyXp(kept)} XP · penalty quest"
+                    over && len - kept >= Challenges.WEEKLY_PENALTY_MISSED -> "+${Challenges.weeklyXp(kept)} XP · penalty quest"
                     over -> "+${Challenges.weeklyXp(kept)} XP"
                     else -> "worth +${Challenges.weeklyXp(kept)} XP so far (7/7 = ${Challenges.WEEKLY_XP})"
                 }
@@ -323,7 +311,7 @@ private fun ActiveCard(
                 Challenges.weeklyById(t.id)?.let { Text("Tip: ${it.tip}", color = C.Muted, fontSize = 12.sp) }
                 if (!over) {
                     Text(
-                        "Every day counts: +${Challenges.WEEKLY_DAY_XP} XP per day kept. Fewer than ${Challenges.WEEKLY_PENALTY_BELOW} days kept = a penalty quest when the week ends.",
+                        "Ends on day ${java.time.temporal.ChronoUnit.DAYS.between(data.settings.currentSeasonStart, Challenges.endDate(t)) + 1} of your season. +${Challenges.WEEKLY_DAY_XP} XP per day kept. Miss ${Challenges.WEEKLY_PENALTY_MISSED} or more days = a penalty quest the next day.",
                         color = C.Muted, fontSize = 11.sp,
                     )
                 }

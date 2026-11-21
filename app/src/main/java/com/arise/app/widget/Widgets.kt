@@ -114,7 +114,7 @@ class StatusWidget : GlanceAppWidget() {
             ) {
                 Text("ARISE", style = style(WGlow, 11, bold = true))
                 Text(p?.rank ?: "?", style = style(WGold, 40, bold = true))
-                Text(if (p != null) "Lv ${p.level} · 🔥${p.streak}" else "Open Arise", style = style(WText, 12))
+                Text(if (p != null) "Lv ${p.level} · 📈${p.consistency}/${p.consistencyOf}" else "Open Arise", style = style(WText, 12))
                 Spacer(GlanceModifier.height(6.dp))
                 LinearProgressIndicator(
                     progress = if (st == null || st.total == 0) 0f else st.doneCount.toFloat() / st.total,
@@ -173,7 +173,7 @@ class QuestListWidget : GlanceAppWidget() {
                                 Text(r.title, style = style(if (r.due) WText else WDim, 13), maxLines = 1, modifier = GlanceModifier.defaultWeight())
                                 when {
                                     r.kind == Kind.WAKE && r.due -> WidgetButton("I'M UP", WGood, actionRunCallback<WakeCallback>())
-                                    r.kind == Kind.CHECK && r.due -> WidgetButton("✓", WGood, actionRunCallback<DoneCallback>(actionParametersOf(QuestKey to r.id)))
+                                    r.kind == Kind.CHECK && r.due && !r.id.startsWith("todo_") && r.id != "learn" -> WidgetButton("✓", WGood, actionRunCallback<DoneCallback>(actionParametersOf(QuestKey to r.id)))
                                     r.due -> WidgetButton("Open", WGlow, actionStartActivity<MainActivity>())
                                     else -> Unit
                                 }
@@ -214,7 +214,7 @@ class CountdownWidget : GlanceAppWidget() {
                     }
                 }
                 Text(
-                    if (p != null) "${Season.label(s, today)} · Week ${Program.week(s, today)} · Lv ${p.level} ${p.rank}-Rank · 🔥${p.streak}" else "Disappear. Come back unrecognisable.",
+                    if (p != null) "${Season.label(s, today)} · Week ${Program.week(s, today)} · Lv ${p.level} ${p.rank}-Rank · 📈${p.consistency}/${p.consistencyOf} on track" else "Disappear. Come back unrecognisable.",
                     style = style(WDim, 11),
                 )
             }

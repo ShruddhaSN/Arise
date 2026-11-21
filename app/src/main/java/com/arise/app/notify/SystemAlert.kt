@@ -95,12 +95,20 @@ object SystemAlert {
             .putExtra("date", date.toString())
 
     @SuppressLint("MissingPermission")
-    fun show(ctx: Context, kind: String, title: String, text: String, questId: String? = null, date: LocalDate = LocalDate.now()) {
+    /** True when pop-ups can open over other apps (then no extra notification is needed). */
+    fun canPop(ctx: Context): Boolean = android.provider.Settings.canDrawOverlays(ctx)
+
+    /**
+     * The pop-up over other apps. Without that permission it falls back to a full-screen notification,
+     * unless [fallback] is false (the caller already posted its own notification, so we don't double up).
+     */
+    fun show(ctx: Context, kind: String, title: String, text: String, questId: String? = null, date: LocalDate = LocalDate.now(), fallback: Boolean = true) {
         val i = intent(ctx, kind, title, text, questId, date)
-        if (android.provider.Settings.canDrawOverlays(ctx)) {
+        if (canPop(ctx)) {
             val opened = runCatching { ctx.startActivity(i) }.isSuccess
             if (opened) return
         }
+        if (!fallback) return
         if (Build.VERSION.SDK_INT >= 33 &&
             ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
@@ -152,10 +160,11 @@ object QuestActions {
         val rec = data.day(date)
         val next = when (q.kind) {
             Kind.AMOUNT -> rec.copy(amounts = rec.amounts + (id to q.target), skipped = rec.skipped - id)
-            Kind.ROUTINE -> rec.copy(routine = rec.routine + q.items.map { it.id }, skipped = rec.skipped - id)
+            Kind.ROUTINE -> rec.copy(done = rec.done + (id to Done.FULL), skipped = rec.skipped - id)
             else -> rec.copy(done = rec.done + (id to Done.FULL), skipped = rec.skipped - id)
         }
         Store.save(ctx, data.with(next))
+        Reminders.cancelSettled(ctx, data.with(next))
         Reminders.scheduleNext(ctx, java.time.LocalDateTime.now())
     }
 }
@@ -182,28 +191,8 @@ class QuestActionReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         when (intent.action) {
             ACTION_WAKE -> {
-                val lines = QuestActions.wake(ctx)
-                if (Build.VERSION.SDK_INT < 33 ||
-                    ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-                ) {
-                    val text = lines.joinToString("\n")
-                    val n = NotificationCompat.Builder(ctx, Reminders.CHANNEL)
-                        .setSmallIcon(R.drawable.ic_stat_arise)
-                        .setColor(0xFF4DA3FF.toInt())
-                        .setContentTitle("[SYSTEM] Player has awakened")
-                        .setContentText(lines.firstOrNull() ?: "")
-                        .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-                        .setContentIntent(
-                            PendingIntent.getActivity(
-                                ctx, 0, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                            ),
-                        )
-                        .setAutoCancel(true)
-                        .setTimeoutAfter(10 * 60 * 1000L)
-                        .build()
-                    NotificationManagerCompat.from(ctx).notify(5353, n)
-                }
+                // Records the time. No second "you're awake" notification: one is enough.
+                QuestActions.wake(ctx)
             }
             ACTION_DONE -> {
                 val id = intent.getStringExtra("quest") ?: return

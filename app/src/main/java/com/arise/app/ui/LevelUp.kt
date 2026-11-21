@@ -158,6 +158,8 @@ fun LevelUpOverlay(
                     "Congratulations, $name. You have grown stronger.",
                     color = C.Text2, fontSize = 15.sp,
                 )
+                Spacer(Modifier.height(6.dp))
+                Text(com.arise.app.game.Quotes.forLevel(toLevel).line, color = C.Muted, fontSize = 12.sp)
                 Spacer(Modifier.height(10.dp))
                 SysButton("ARISE", onClick = onDone, selected = true, color = color, modifier = Modifier.fillMaxWidth())
             }

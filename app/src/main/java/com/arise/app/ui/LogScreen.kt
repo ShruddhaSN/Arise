@@ -45,13 +45,8 @@ private val shortFmt = DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH)
 private val longFmt = DateTimeFormatter.ofPattern("EEE, d MMM", Locale.ENGLISH)
 
 /** Minutes slept, from last night's bed time to this morning's wake time. */
-private fun sleepMinutes(r: DayRecord?): Int? {
-    val b = r?.bedTime?.let(LocalTime::parse) ?: return null
-    val w = r?.wakeTime?.let(LocalTime::parse) ?: return null
-    var mins = w.toSecondOfDay() / 60 - b.toSecondOfDay() / 60
-    if (mins <= 0) mins += 24 * 60
-    return mins
-}
+private fun sleepMinutes(r: DayRecord?): Int? = com.arise.app.game.Game.sleptMin(r)
+
 
 /** Bedtime as minutes after 6 PM, so 11 PM and 1 AM sit on one continuous scale. */
 private fun bedScale(t: LocalTime): Float {
@@ -99,7 +94,7 @@ fun LogScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Unit) {
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SysButton("Lights off: ${rec.bedTime?.let { fmt(LocalTime.parse(it)) } ?: "set"}", onClick = {
-                    pickTime(rec.bedTime, LocalTime.of(23, 0)) { onUpdate(data.with(rec.copy(bedTime = it))) }
+                    pickTime(rec.bedTime, LocalTime.of(23, 0)) { onUpdate(data.with(rec.copy(bedTime = it, sleepSource = "manual"))) }
                 })
                 SysButton("Woke: ${rec.wakeTime?.let { fmt(LocalTime.parse(it)) } ?: "set"}", onClick = {
                     pickTime(rec.wakeTime, LocalTime.now()) { onUpdate(data.with(rec.copy(wakeTime = it))) }
@@ -188,6 +183,7 @@ fun LogScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Unit) {
 
         SysLabel("Growth")
         GrowthPanel(data, today)
+        Habits(data, today)
         SysLabel("Trends")
         Charts(data, today)
         SkipPatterns(data, today)

@@ -46,19 +46,28 @@ data class Progress(
     val bestStreak: Int,
     val clearedDays: Int,
     val bosses: List<Pair<Boss, Boolean>>,
+    /** Days on track in the last [consistencyOf] days (sick days left out). One bad day only nudges this. */
+    val consistency: Int = 0,
+    val consistencyOf: Int = 0,
 )
 
 /** All progress is derived from the day records, so nothing can drift out of sync. */
 object Game {
-    const val CLEAR_RATIO = 0.7f
+    /** Share of the core quests that makes a day "on track". */
+    const val CLEAR_RATIO = 0.6f
+    /** Side quests earn this share of their XP: a small bonus, so ticking them for nothing gains you little. */
+    const val SIDE_XP = 0.5f
+    /** Slept this share of your sleep goal = the sleep quest counts. */
+    const val SLEEP_OK = 0.85f
     /** XP of a solid day. Level targets are "N good days" of this. */
     const val GOOD_DAY_XP = 250
     const val NOTES_XP = 10
 
-    val penaltyQuest = Quest(
-        "penalty", "PENALTY: Make it right",
-        "20 squats and a 10-min walk. Then you're back in the game.",
-        null, Stat.STR, 30, "⚠",
+    /** After a rest day: one small, easy win. Bonus only; nothing bad happens if you skip it. */
+    val comebackQuest = Quest(
+        "penalty", "Comeback: one small win",
+        "Pick the easiest thing today, or take a 10-minute walk. That's it. You're back.",
+        null, Stat.VIT, 30, "🌱", optional = true, limitMin = null,
     )
 
     fun typeFor(data: AppData, date: LocalDate): DayType =
@@ -69,24 +78,71 @@ object Game {
     private var memoData: AppData? = null
     private val planMemo = HashMap<LocalDate, DayPlan>()
     private val levelMemo = HashMap<Int, Int>()
+    private val weekMemo = HashMap<Int, Map<LocalDate, Workout>>()
 
     private fun <T> memo(data: AppData, block: () -> T): T = synchronized(lock) {
         if (memoData !== data) {
             memoData = data
             planMemo.clear()
             levelMemo.clear()
+            weekMemo.clear()
         }
         block()
     }
 
     fun plan(data: AppData, date: LocalDate): DayPlan = memo(data) {
-        planMemo.getOrPut(date) {
+        planMemo[date] ?: run {
             val rec = data.records[date]
-            Program.plan(
-                data.settings, date, typeFor(data, date), runLevel(data, date),
-                PlanCtx(wake = rec?.wake, event = rec?.event, tomorrow = typeFor(data, date.plusDays(1))),
+            val type = typeFor(data, date)
+            val p = Program.plan(
+                data.settings, date, type, runLevel(data, date),
+                PlanCtx(
+                    wake = rec?.wake, events = rec?.events.orEmpty(), tomorrow = typeFor(data, date.plusDays(1)),
+                    workout = workoutFor(data, date), gentle = comebackActive(data, date),
+                    extra = Todo.blocks(data.settings, data, date, type),
+                ),
             )
+            planMemo[date] = p
+            p
         }
+    }
+
+    private fun sessionDone(rec: DayRecord?, w: Workout): Boolean {
+        if (rec == null) return false
+        val id = if (w == Workout.STRENGTH) "strength" else "run"
+        return (rec.amounts[id] ?: 0.0) > 0.0 || rec.done.containsKey(id)
+    }
+
+    /**
+     * Today's session from your weekly counts. Sessions sit on spread-out days; a missed one (not done,
+     * or skipped) moves to the next free day. Sick days, leave and whole-day events are never training days.
+     * Whatever is still left when the week ends is simply dropped. No pile-up.
+     */
+    fun workoutFor(data: AppData, date: LocalDate): Workout = memo(data) {
+        val s = data.settings
+        if (date == s.earliest) return@memo Workout.FIRST_WALK
+        val week = Program.week(s, date)
+        val map = weekMemo.getOrPut(week) {
+            val start = s.start.plusDays((week - 1) * 7L)
+            val slots = Program.weekSlots(s)
+            val queue = ArrayDeque<Workout>()
+            val out = HashMap<LocalDate, Workout>()
+            val today = LocalDate.now()
+            for (i in 0..6) {
+                val d = start.plusDays(i.toLong())
+                slots.filter { it.first == i }.forEach { queue.addLast(it.second) }
+                val type = typeFor(data, d)
+                val rec = data.records[d]
+                val free = type != DayType.SICK && type != DayType.OFF && rec?.events.orEmpty().none { it.wholeDay } && d != s.earliest
+                if (!free || queue.isEmpty()) continue
+                val w = queue.first()
+                out[d] = w
+                // Past days: only a session you actually did leaves the queue. Today and later: assume it will be.
+                if (d >= today || sessionDone(rec, w)) queue.removeFirst()
+            }
+            out
+        }
+        map[date] ?: Workout.NONE
     }
 
     /** Full runs needed in a week to move the run plan up. */
@@ -136,9 +192,25 @@ object Game {
         }
     }
 
+    /** Minutes slept last night: bed time to the detected end of sleep (or "I'm up"). */
+    fun sleptMin(rec: DayRecord?): Int? {
+        if (rec == null) return null
+        val b = rec.bedTime?.let { runCatching { LocalTime.parse(it) }.getOrNull() } ?: return null
+        val e = (rec.sleepEnd ?: rec.wakeTime)?.let { runCatching { LocalTime.parse(it) }.getOrNull() } ?: return null
+        var m = e.toSecondOfDay() / 60 - b.toSecondOfDay() / 60
+        if (m <= 0) m += 24 * 60
+        return m.takeIf { it in 60..(16 * 60) }
+    }
+
     /** 0..1: how much of the quest's XP was earned. */
     fun ratio(q: Quest, rec: DayRecord?): Float {
         if (rec == null) return 0f
+        // The lesson counts once you've answered its recall question; just opening it is a small start.
+        if (q.id == "learn") return when {
+            rec.done.containsKey("recall") -> 1f
+            rec.done.containsKey("learn") || (rec.amounts["learn"] ?: 0.0) > 0.0 -> 0.3f
+            else -> 0f
+        }
         return when (q.kind) {
             Kind.CHECK -> when (rec.done[q.id]) {
                 Done.FULL -> 1f
@@ -148,10 +220,12 @@ object Game {
             // A Done on a quest that later became measurable still counts in full.
             Kind.AMOUNT -> if (rec.done[q.id] == Done.FULL) 1f else ((rec.amounts[q.id] ?: 0.0) / q.target).toFloat().coerceIn(0f, 1f)
             Kind.WAKE -> wakeRatio(q.target, rec.wakeTime)
-            Kind.ROUTINE -> {
-                val need = q.items.filter { !it.optional }
-                if (need.isEmpty()) 0f else need.count { it.id in rec.routine }.toFloat() / need.size
+            Kind.ROUTINE -> when {
+                rec.done.containsKey(q.id) -> 1f
+                q.items.isEmpty() -> 0f
+                else -> 0.5f * q.items.count { it.id in rec.routine } / q.items.size
             }
+            Kind.SLEEP -> sleptMin(rec)?.let { (it / q.target).toFloat().coerceIn(0f, 1f) } ?: 0f
         }
     }
 
@@ -159,7 +233,9 @@ object Game {
     fun counts(q: Quest, rec: DayRecord?): Boolean {
         if (rec == null) return false
         return when (q.kind) {
-            Kind.CHECK -> rec.done.containsKey(q.id)
+            Kind.CHECK -> if (q.id == "learn") rec.done.containsKey("recall") else rec.done.containsKey(q.id)
+            Kind.SLEEP -> ratio(q, rec) >= SLEEP_OK
+            Kind.ROUTINE -> rec.done.containsKey(q.id)
             else -> ratio(q, rec) >= 0.5f
         }
     }
@@ -172,11 +248,12 @@ object Game {
             Kind.CHECK -> rec.done.containsKey(q.id)
             Kind.AMOUNT -> (rec.amounts[q.id] ?: 0.0) > 0.0 || rec.done.containsKey(q.id)
             Kind.WAKE -> rec.wakeTime != null
-            Kind.ROUTINE -> ratio(q, rec) >= 1f
+            Kind.ROUTINE -> rec.done.containsKey(q.id)
+            Kind.SLEEP -> sleptMin(rec) != null
         }
     }
 
-    fun xpFor(q: Quest, rec: DayRecord?): Int = (q.xp * ratio(q, rec)).roundToInt()
+    fun xpFor(q: Quest, rec: DayRecord?): Int = (q.xp * ratio(q, rec) * if (q.optional) SIDE_XP else 1f).roundToInt()
 
     fun status(data: AppData, date: LocalDate): DayStatus {
         val p = plan(data, date)
@@ -185,20 +262,41 @@ object Game {
         val required = qs.filter { !it.optional }
         var xp = qs.sumOf { xpFor(it, rec) }
         if (rec != null) {
-            if (rec.done.containsKey(penaltyQuest.id)) xp += penaltyQuest.xp
+            if (rec.done.containsKey(comebackQuest.id)) xp += comebackQuest.xp
             if (rec.done.containsKey("notes") && qs.any { it.id == "learn" }) xp += NOTES_XP
-            if (rec.done.containsKey("recall") && qs.any { it.id == "learn" }) xp += NOTES_XP
-            if (rec.done.containsKey(Challenges.weeklyPenaltyQuest.id)) xp += Challenges.weeklyPenaltyQuest.xp
         }
         return DayStatus(p, required.count { counts(it, rec) }, required.size, xp)
     }
 
-    /** Never miss twice. Day 1, fill-in days and sick days never cause a penalty. */
-    fun penaltyActive(data: AppData, date: LocalDate): Boolean {
+    /**
+     * Yesterday wasn't on track: today is a gentle day with an optional comeback quest. Never a penalty.
+     * Day 1, fill-in days and sick days don't count.
+     */
+    fun comebackActive(data: AppData, date: LocalDate): Boolean {
         val y = date.minusDays(1)
-        if (!data.settings.onboarded || y <= data.settings.start) return false
+        if (!data.settings.onboarded || y <= data.settings.start || y < data.settings.earliest) return false
         val s = status(data, y)
         return !s.sick && !s.cleared
+    }
+
+    /** On-track days in the last 30 (or fewer, early on), sick days left out. */
+    fun consistency(data: AppData, today: LocalDate): Pair<Int, Int> {
+        var on = 0
+        var of = 0
+        var d = today.minusDays(1)
+        if (status(data, today).cleared) {
+            on++
+            of++
+        }
+        while (d >= data.settings.earliest && of < 30) {
+            val st = status(data, d)
+            if (!st.sick) {
+                of++
+                if (st.cleared) on++
+            }
+            d = d.minusDays(1)
+        }
+        return on to of
     }
 
     /** Only Min on yes/no quests uses a pass (an old Min on a quest that is now measurable is refunded). */
@@ -299,12 +397,15 @@ object Game {
                 }
             }
             val i0 = index[topic] ?: 0
-            val count = if (weekend && topic != Topic.WILDCARD) 2 else 1
+            // One short pick a day; weekends are no heavier.
+            val count = 1
             val lessons = (0 until count).mapNotNull { Curriculum.lesson(topic, i0 + it, lang) }
             if (d == date) return DayLesson(topic, lessons)
 
-            val learnQ = plan(data, d).quests.firstOrNull { it.id == "learn" }
-            if (learnQ != null && ratio(learnQ, data.records[d]) >= 0.5f) index[topic] = i0 + lessons.size
+            // Courses (a language, sign language) only move on once you've done the lesson; short picks always move on.
+            val course = topic == Topic.LANGUAGE || topic == Topic.SIGN
+            val did = data.records[d]?.done?.containsKey("recall") == true
+            if (!course || did) index[topic] = i0 + lessons.size
             lastSeen[topic] = n
             prev = topic
             n++
@@ -335,7 +436,7 @@ object Game {
     }
 
     val bosses: List<Boss> = listOf(
-        Boss("gate", "The First Gate", "Clear your first day (70% of quests)", 100, check = { d, t ->
+        Boss("gate", "The First Gate", "Your first day on track", 100, check = { d, t ->
             longestRunOf(d, t) { status(d, it).cleared } >= 1
         }),
         Boss("perfect", "Perfect Day", "Every quest at 100% in a single day", 150, check = { d, t ->
@@ -344,16 +445,16 @@ object Game {
                 plan(d, day).quests.filter { !it.optional }.all { ratio(it, rec) >= 1f }
             } >= 1
         }),
-        Boss("week", "Iron Week", "Reach a 7-day streak", 250, check = { d, t -> bestStreak(d, t) >= 7 }),
-        Boss("sleep7", "Sleep Sovereign", "Lights off on time (Done) 7 nights in a row", 250, check = { d, t ->
-            longestRunOf(d, t) { d.records[it]?.done?.get("sleep") == Done.FULL } >= 7
+        Boss("week", "Iron Week", "7 days on track in a row", 250, check = { d, t -> bestStreak(d, t) >= 7 }),
+        Boss("sleep7", "Sleep Sovereign", "Sleep your goal (85%+) 7 nights in a row", 250, check = { d, t ->
+            longestRunOf(d, t) { day -> plan(d, day).quests.firstOrNull { it.id == "sleep" }?.let { counts(it, d.records[day]) } == true } >= 7
         }),
         Boss("run5", "The 5-Minute Wall", "Run 5 minutes non-stop", 300, check = { d, _ -> longestRunSec(d) >= 300 }),
         Boss("scholar", "Scholar", "Complete 20 lessons", 300, check = { d, _ -> countLearn(d) >= 20 }),
         Boss("run10", "Ten Unbroken", "Run 10 minutes non-stop", 400, check = { d, _ -> longestRunSec(d) >= 600 }),
         Boss("iron", "Iron Body", "Complete 12 strength sessions at full", 300, check = { d, _ -> countFullQuest(d, "strength") >= 12 }),
         Boss("scale2", "Scale Shift", "Weight down 2 kg from your first weigh-in", 300, check = { d, _ -> weightDrop(d) >= 2.0 }),
-        Boss("streak21", "21 Days of Steel", "Reach a 21-day streak", 500, check = { d, t -> bestStreak(d, t) >= 21 }),
+        Boss("streak21", "21 Days of Steel", "21 days on track in a row", 500, check = { d, t -> bestStreak(d, t) >= 21 }),
         Boss("scale5", "Metamorphosis", "Weight down 5 kg from your first weigh-in", 600, check = { d, _ -> weightDrop(d) >= 5.0 }),
         Boss("run20", "FINAL BOSS: The 20-Minute Run", "Run 20 minutes non-stop", 1000, check = { d, _ -> longestRunSec(d) >= 1200 }),
         // Korean milestones: claimed by you when you've honestly done them.
@@ -407,13 +508,10 @@ object Game {
             val rec = data.records[d]
             s.plan.quests.forEach { q -> statXp[q.stat] = statXp.getValue(q.stat) + xpFor(q, rec) }
             if (rec != null) {
-                if (rec.done.containsKey(penaltyQuest.id)) {
-                    statXp[penaltyQuest.stat] = statXp.getValue(penaltyQuest.stat) + penaltyQuest.xp
+                if (rec.done.containsKey(comebackQuest.id)) {
+                    statXp[comebackQuest.stat] = statXp.getValue(comebackQuest.stat) + comebackQuest.xp
                 }
                 if (rec.done.containsKey("notes") && s.plan.quests.any { it.id == "learn" }) {
-                    statXp[Stat.INT] = statXp.getValue(Stat.INT) + NOTES_XP
-                }
-                if (rec.done.containsKey("recall") && s.plan.quests.any { it.id == "learn" }) {
                     statXp[Stat.INT] = statXp.getValue(Stat.INT) + NOTES_XP
                 }
             }
@@ -430,14 +528,17 @@ object Game {
 
         var level = 1
         while (levelStart(level + 1) <= total) level++
+        // Levels you've reached stay reached, even if the scoring rules change.
+        level = maxOf(level, data.settings.seenLevel)
         val rank = rankFor(level)
         val best = bestStreak(data, today)
+        val (on, of) = consistency(data, today)
         return Progress(
             totalXp = total,
             level = level,
             rank = rank,
             title = titleFor(rank),
-            xpInLevel = total - levelStart(level),
+            xpInLevel = (total - levelStart(level)).coerceAtLeast(0),
             xpLevelSpan = levelStart(level + 1) - levelStart(level),
             stats = statXp.mapValues { 10 + it.value / 100 },
             discipline = 10 + cleared + best / 2,
@@ -445,6 +546,8 @@ object Game {
             bestStreak = best,
             clearedDays = cleared,
             bosses = bossList,
+            consistency = on,
+            consistencyOf = of,
         )
     }
 }
@@ -522,8 +625,8 @@ object Feats {
         Achievement("responder", "First Responder", "When the System calls, you answer.", "Clear 5 emergency quests") { d, _ ->
             d.records.values.sumOf { r -> r.done.keys.count { it.startsWith("emg") } } >= 5
         },
-        Achievement("redemption", "Redemption", "Falling is allowed. Staying down isn't.", "Complete a penalty quest") { d, _ ->
-            d.records.values.any { it.done.containsKey(Game.penaltyQuest.id) }
+        Achievement("redemption", "The Comeback", "Falling is allowed. Coming back is everything.", "Do a comeback quest after a rest day") { d, _ ->
+            d.records.values.any { it.done.containsKey(Game.comebackQuest.id) }
         },
         Achievement("voice", "The Voice", "What you can say out loud, you truly know.", "Answer 10 recall questions out loud") { d, _ ->
             d.records.values.sumOf { it.answers.size } >= 10
@@ -556,7 +659,7 @@ object Feats {
             d.settings.blocked.isNotEmpty() && countDays(d, t) { (d.records[it]?.amounts?.get("unlocks") ?: 0.0) == 0.0 && d.records[it] != null } >= 7
         },
         Achievement("iron_week", "Iron Will", "Seven days. Not one exception.", "Clear a weekly challenge") { d, t ->
-            d.settings.challenges.any { it.kind == com.arise.app.data.ChallengeKind.WEEKLY && Challenges.cleared(d, it, t) }
+            d.settings.challenges.any { it.kind == com.arise.app.data.ChallengeKind.WEEKLY && Challenges.length(it) == 7 && Challenges.cleared(d, it, t) }
         },
         Achievement("apprentice", "Apprentice", "A month ago you couldn't. Now you can.", "Clear a monthly skill challenge") { d, t ->
             d.settings.challenges.any { it.kind == com.arise.app.data.ChallengeKind.SKILL && Challenges.cleared(d, it, t) }
@@ -655,8 +758,9 @@ object Feats {
             add("Awake at ${fmt(w)}. Goal ${fmt(goal)}: ${lateText(late)}.")
             add("Rise: +${Game.xpFor(q, rec)} VIT XP")
             addAll(plan.notes)
-            plan.quests.firstOrNull { it.id == "morning" }?.let { add("Morning routine unlocked: ${it.items.count { i -> !i.optional }} steps.") }
-            if (Game.penaltyActive(data, date)) add("A penalty quest is waiting. Clear it today.")
+            Game.sleptMin(rec)?.let { add("Slept ${it / 60}h ${it % 60}m last night.") }
+            if (Game.comebackActive(data, date)) add("Yesterday was a rest. Today is a gentle day: one small win is enough.")
+            add(Quotes.forDay(data.settings, date).second.line)
         }
     }
 

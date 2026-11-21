@@ -71,6 +71,14 @@ fun PlayerScreen(
 ) {
     val ctx = LocalContext.current
     var claiming by remember { mutableStateOf<com.arise.app.game.Boss?>(null) }
+    var timesOpen by remember { mutableStateOf(false) }
+    val healthAsk = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.health.connect.client.PermissionController.createRequestPermissionResultContract(),
+    ) { granted ->
+        val on = granted.isNotEmpty()
+        onUpdate(data.copy(settings = data.settings.copy(healthSync = on)))
+        android.widget.Toast.makeText(ctx, if (on) "[SYSTEM] Samsung Health connected" else "Not connected. You can try again any time.", android.widget.Toast.LENGTH_SHORT).show()
+    }
     var restarting by remember { mutableStateOf(false) }
     var viewing by remember { mutableStateOf<com.arise.app.game.Achievement?>(null) }
     // Re-check permissions when coming back from the Settings app.
@@ -159,9 +167,10 @@ fun PlayerScreen(
         }
 
         Panel {
-            SysLabel("Streak")
-            Text("🔥 ${p.streak} day${if (p.streak == 1) "" else "s"}", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Text("Best ${p.bestStreak} · ${p.clearedDays} days cleared", color = C.Text2, fontSize = 13.sp)
+            SysLabel("Consistency")
+            Text("📈 ${p.consistency} of the last ${p.consistencyOf} days on track", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text("One off day only nudges this. It never resets.", color = C.Muted, fontSize = 12.sp)
+            Text("Current run ${p.streak} · best ${p.bestStreak} · ${p.clearedDays} days on track in total", color = C.Text2, fontSize = 13.sp)
             Text("Day 1 was ${data.settings.start}", color = C.Muted, fontSize = 12.sp)
             Text(
                 "Minimum passes left this week: ${Game.passesLeft(data, today)}/${Program.MIN_PASSES_PER_WEEK}",
@@ -226,6 +235,43 @@ fun PlayerScreen(
             SysLabel("Plan")
             Spacer(Modifier.height(6.dp))
             SysButton("📅 Calendar: WFH, leave, sick days and events", onClick = onCalendar, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+            SysButton("⏰ Your times: reminders, bedtime, sleep goal, training per week", onClick = { timesOpen = true }, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+            val hc = com.arise.app.notify.Health.available(ctx)
+            SysButton(
+                when {
+                    !hc -> "❤ Samsung Health: install Health Connect first"
+                    data.settings.healthSync -> "❤ Samsung Health connected · steps and sleep ✓"
+                    else -> "❤ Connect Samsung Health (steps and sleep)"
+                },
+                onClick = {
+                    if (!hc) {
+                        runCatching {
+                            ctx.startActivity(
+                                android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("market://details?id=com.google.android.apps.healthdata"))
+                                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
+                    } else if (data.settings.healthSync) {
+                        onUpdate(data.copy(settings = data.settings.copy(healthSync = false)))
+                    } else {
+                        runCatching { healthAsk.launch(com.arise.app.notify.Health.permissions) }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(), selected = data.settings.healthSync, color = C.Good,
+            )
+            if (hc && !data.settings.healthSync) {
+                Text("In Samsung Health: Settings → Health Connect → allow it to share steps and sleep. Then connect here.", color = C.Muted, fontSize = 11.sp)
+            }
+            Spacer(Modifier.height(8.dp))
+            val usage = com.arise.app.notify.Health.hasUsageAccess(ctx)
+            SysButton(
+                if (usage) "😴 Sleep detection on (screen off overnight) ✓" else "😴 Turn on sleep detection",
+                onClick = { runCatching { ctx.startActivity(com.arise.app.notify.Health.usageAccessIntent()) } },
+                modifier = Modifier.fillMaxWidth(), selected = usage, color = C.Glow,
+            )
+            Text("Usage access lets Arise see when your screen was off. Nothing leaves your phone.", color = C.Muted, fontSize = 11.sp)
             Spacer(Modifier.height(8.dp))
             SysButton("🎓 Replay the tutorial", onClick = onTutorial, modifier = Modifier.fillMaxWidth(), color = C.Muted)
 
@@ -402,6 +448,12 @@ fun PlayerScreen(
         )
     }
 
+    if (timesOpen) {
+        ScheduleDialog(data.settings, onSave = { ns ->
+            timesOpen = false
+            onUpdate(data.copy(settings = ns.copy(scheduleSet = true)))
+        }, onDismiss = { timesOpen = false })
+    }
     claiming?.let { b ->
         AlertDialog(
             onDismissRequest = { claiming = null },

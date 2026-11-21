@@ -77,11 +77,48 @@ object Challenges {
 
     fun weeklyById(id: String) = weekly.firstOrNull { it.id == id }
 
-    /** Three suggestions for this week, the same all week. */
-    fun offers(date: LocalDate): List<WeeklyChallenge> {
-        val week = date.toEpochDay() / 7
-        return weekly.shuffled(java.util.Random(week * 97L + 11L)).take(3)
+    /** Your weeks: day 1-7, 8-14, 15-21… counted from Day 1 of the current season. */
+    fun weekNo(s: Settings, date: LocalDate): Int =
+        (ChronoUnit.DAYS.between(s.currentSeasonStart, date) / 7).toInt().coerceAtLeast(0)
+
+    fun weekFirstDay(s: Settings, date: LocalDate): LocalDate = s.currentSeasonStart.plusWeeks(weekNo(s, date).toLong())
+
+    /**
+     * The System's random pick. No repeats: every challenge comes up once before any comes back,
+     * and never the same one twice in a row.
+     */
+    fun pick(s: Settings, seed: Long): WeeklyChallenge {
+        val past = s.challenges.filter { it.kind == ChallengeKind.WEEKLY }.map { it.id }
+        val thisRound = past.takeLast(past.size % weekly.size).toSet() + listOfNotNull(past.lastOrNull())
+        val pool = weekly.filter { it.id !in thisRound }.ifEmpty { weekly }
+        return pool.shuffled(java.util.Random(seed * 97L + 11L)).first()
     }
+
+    /**
+     * This week's offer: a random challenge you can accept or skip. Null once you've accepted or skipped
+     * one this week. It's a side quest: no penalty, ever.
+     */
+    fun weeklyOffer(data: AppData, today: LocalDate): WeeklyChallenge? {
+        val s = data.settings
+        if (today.isBefore(s.start)) return null
+        val first = weekFirstDay(s, today)
+        val last = first.plusDays(6)
+        if (s.weeklyDeclined == first) return null
+        val weeklies = s.challenges.filter { it.kind == ChallengeKind.WEEKLY }
+        if (weeklies.any { running(it, today) }) return null
+        if (weeklies.any { !it.start.isBefore(first) && !it.start.isAfter(last) }) return null
+        return pick(s, first.toEpochDay())
+    }
+
+    /** Accepting mid-week: it starts today and still ends on the week's last day. */
+    fun acceptWeekly(data: AppData, today: LocalDate, w: WeeklyChallenge): AppData {
+        val s = data.settings
+        val t = Taken(w.id, ChallengeKind.WEEKLY, today, end = weekFirstDay(s, today).plusDays(6))
+        return data.copy(settings = s.copy(challenges = s.challenges + t))
+    }
+
+    fun declineWeekly(data: AppData, today: LocalDate): AppData =
+        data.copy(settings = data.settings.copy(weeklyDeclined = weekFirstDay(data.settings, today)))
 
     // ---- Monthly skills ----
 
@@ -296,7 +333,7 @@ object Challenges {
     // ---- Shared ----
 
     fun length(t: Taken): Int = when (t.kind) {
-        ChallengeKind.WEEKLY -> 7
+        ChallengeKind.WEEKLY -> t.end?.let { (ChronoUnit.DAYS.between(t.start, it) + 1).toInt() } ?: 7
         ChallengeKind.SKILL -> 30
         ChallengeKind.BODY -> bodyById(t.id)?.days ?: 7
     }
@@ -376,8 +413,8 @@ object Challenges {
                     out += Block(
                         LocalTime.of(21, 30), "Weekly challenge",
                         quest = Quest(
-                            questId(t), "${w.title} · day ${day(t, date)}/7", "${w.rule} Did you keep it today? Be honest: the System trusts you.",
-                            null, Stat.VIT, 25, w.icon, limitMin = 120,
+                            questId(t), "${w.title} · day ${day(t, date)}/${length(t)}", "${w.rule} Did you keep it today? Honest answers only; a slip is just data.",
+                            null, Stat.VIT, 25, w.icon, limitMin = 120, optional = true,
                         ),
                     )
                 }
@@ -443,13 +480,13 @@ object Challenges {
         }
     }
 
-    /** Cleared: weekly = all 7 kept; skill = 20 of 30 days; body = 80% of days. Only once it's over. */
+    /** Cleared: weekly = every day kept; skill = 20 of 30 days; body = 80% of days. Only once it's over. */
     fun cleared(data: AppData, t: Taken, today: LocalDate): Boolean {
         if (today.isBefore(endDate(t))) return false
         val m = marks(data, t, today)
         val kept = m.count { it == Mark.KEPT }
         return when (t.kind) {
-            ChallengeKind.WEEKLY -> kept == 7
+            ChallengeKind.WEEKLY -> kept == m.size
             ChallengeKind.SKILL -> kept >= 20
             ChallengeKind.BODY -> kept * 5 >= m.size * 4
         }
@@ -458,25 +495,14 @@ object Challenges {
     /** XP per kept day of a weekly challenge; a perfect week rounds up to [WEEKLY_XP]. */
     const val WEEKLY_DAY_XP = 20
 
-    /** Kept 3 days or fewer: a penalty quest the day after the week ends. */
-    const val WEEKLY_PENALTY_BELOW = 4
+    /** No longer used: weekly challenges never bring a penalty. */
+    const val WEEKLY_PENALTY_MISSED = 4
 
     fun kept(data: AppData, t: Taken, today: LocalDate): Int = marks(data, t, today).count { it == Mark.KEPT }
 
     fun weeklyXp(kept: Int): Int = if (kept >= 7) WEEKLY_XP else kept * WEEKLY_DAY_XP
 
     /** The weekly challenge that ended yesterday with too few days kept, if any. */
-    fun weeklyPenalty(data: AppData, date: LocalDate): Taken? = data.settings.challenges.firstOrNull { t ->
-        t.kind == ChallengeKind.WEEKLY && t.quit == null && endDate(t) == date.minusDays(1) &&
-            kept(data, t, date) < WEEKLY_PENALTY_BELOW
-    }
-
-    val weeklyPenaltyQuest = Quest(
-        "wpenalty", "PENALTY: The week wasn't kept",
-        "30 squats, a 15-minute walk, and write one line: what made it hard, and what you'll do differently.",
-        null, Stat.STR, 30, "⚠",
-    )
-
     fun active(s: Settings, today: LocalDate): List<Taken> = s.challenges.filter { running(it, today) || maintaining(it, today) || (it.kind == ChallengeKind.SKILL && it.keep && it.quit == null && today.isAfter(endDate(it))) }
 
     /** Weekly XP scales with days kept (paid once the week is over); skill and body pay when cleared. */

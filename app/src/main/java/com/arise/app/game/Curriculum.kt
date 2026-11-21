@@ -33,85 +33,85 @@ data class Lesson(
 object Curriculum {
     private fun yt(q: String) = "https://www.youtube.com/results?search_query=" + URLEncoder.encode(q, "UTF-8")
 
-    private const val WATCH = "Watch it once without pausing. Then write 3 bullet notes and 1 question you still have. " +
-        "Don't let the next video autoplay."
+    private const val WATCH = "Watch it once (switch off autoplay). Then answer the question out loud. Notes in your notebook if you like."
+    private const val APP = "Open it and do one short lesson, 5 to 10 minutes. Then answer the question out loud."
     private const val READ = "Read slowly. In your notebook: 2 key terms in your own words, and 1 way it applies to your life."
 
     private fun series(topic: Topic, name: String, count: Int, minutes: Int, source: String = "YouTube"): List<Lesson> =
         (1..count).map { n -> Lesson(topic, "$name #$n", source, minutes, yt("$name $n"), WATCH) }
 
+    private fun v(topic: Topic, title: String, channel: String, minutes: Int, query: String = "$channel $title") =
+        Lesson(topic, title, "$channel · YouTube", minutes, yt(query), WATCH)
+
+    private fun app(topic: Topic, title: String, app: String, url: String) = Lesson(topic, title, "$app (free)", 10, url, APP)
+
+    private fun play(q: String) = "https://play.google.com/store/search?q=" + URLEncoder.encode(q, "UTF-8") + "&c=apps"
+
     private val learn: List<Lesson> = listOf(
-        Lesson(Topic.LEARN, "Learning how to learn (TEDx talk)", "Barbara Oakley · YouTube", 18,
-            yt("Barbara Oakley Learning how to learn TEDxOaklandUniversity"), WATCH,
-            recall = listOf(
-                "What are the focused mode and the diffuse mode, and when do you need each one?" to
-                    "Focused = concentrating hard on a problem. Diffuse = relaxed, wandering mind (walks, showers, sleep) where new connections form. You need both, switching between them.",
-                "What is the Pomodoro technique and why does it beat procrastination?" to
-                    "25 minutes of focus, then a short break. Starting is the painful part; a timer makes the start small, and the break is the reward.",
-            )),
-    ) + (1..4).flatMap { m ->
-        listOf("first", "second").map { half ->
-            Lesson(
-                Topic.LEARN, "Learning How to Learn · Module $m ($half half of the videos)", "Coursera (free audit)", 25,
-                "https://www.coursera.org/learn/learning-how-to-learn",
-                "On Coursera choose Enroll, then the free audit option. Watch the $half half of Module $m's videos. " +
-                    "Notes: one technique you'll use this week.",
-            )
-        }
-    }
+        v(Topic.LEARN, "How to practice effectively for just about anything", "TED-Ed", 5),
+        v(Topic.LEARN, "How memories form and how we lose them", "TED-Ed", 4),
+        app(Topic.LEARN, "Learning How to Learn: one video", "Coursera (free audit)", "https://www.coursera.org/learn/learning-how-to-learn"),
+        v(Topic.LEARN, "The Science of Thinking", "Veritasium", 12),
+        v(Topic.LEARN, "How to stay calm under pressure", "TED-Ed", 5),
+        v(Topic.LEARN, "Why we procrastinate", "Vox", 7, "Vox why we procrastinate"),
+    )
 
-    private val body: List<Lesson> = run {
-        val specials = listOf(
-            Lesson(Topic.BODY, "Sleep is your superpower", "Matt Walker · TED", 20, yt("Matt Walker Sleep is your superpower TED"), WATCH,
-                recall = listOf(
-                    "What happens to memory and learning when you don't sleep enough?" to
-                        "Sleep after learning saves new memories ('save button'); sleep before learning prepares the brain to take them in. Without it, learning drops sharply.",
-                    "Name two things from the talk you'll change about your own sleep." to
-                        "His tips: regular sleep and wake times, even on weekends, and a cool, dark room. Your answer should name your own two changes.",
-                )),
-            Lesson(Topic.BODY, "Insulin resistance, explained", "YouTube", 12, yt("insulin resistance explained simply"), WATCH,
-                recall = listOf(
-                    "Explain insulin resistance like you're talking to a friend." to
-                        "Insulin lets sugar into cells. With resistance the cells respond less, so the body makes more insulin; high insulin makes fat storage easier and hunger harder to control.",
-                    "Which three habits improve insulin sensitivity the most?" to
-                        "Strength training (muscle soaks up sugar), walking after meals, and enough sleep. Protein and fibre before carbs also help.",
-                )),
-            Lesson(Topic.BODY, "PCOS: what's actually happening", "YouTube", 12, yt("PCOS explained hormones insulin"), WATCH,
-                recall = listOf(
-                    "How are insulin and PCOS connected?" to
-                        "High insulin pushes the ovaries to make more androgens (male-type hormones), which disrupts ovulation and cycles. Lower insulin often means fewer symptoms.",
-                    "What can you do every day that helps PCOS?" to
-                        "Strength training, walking after meals, steady sleep, protein-first meals, managing stress. No crash diets.",
-                )),
-            Lesson(Topic.BODY, "The brain-changing benefits of exercise", "Wendy Suzuki · TED", 13, yt("Wendy Suzuki brain changing benefits of exercise TED"), WATCH,
-                recall = listOf(
-                    "What does one workout do to your brain right away?" to
-                        "It releases neurotransmitters like dopamine, serotonin and noradrenaline: better mood and focus for at least 2 hours.",
-                    "What does regular exercise do over the long term?" to
-                        "It grows new brain cells in the hippocampus (memory) and strengthens the prefrontal cortex (focus), protecting the brain as you age.",
-                )),
-        )
-        val ap = series(Topic.BODY, "Crash Course Anatomy and Physiology", 47, 11)
-        // One special every third lesson, then the series continues.
-        buildList {
-            var s = 0
-            ap.forEachIndexed { i, l ->
-                if (i % 3 == 0 && s < specials.size) add(specials[s++])
-                add(l)
-            }
-        }
-    }
+    private val body: List<Lesson> = listOf(
+        v(Topic.BODY, "What would happen if you didn't sleep?", "TED-Ed", 5),
+        v(Topic.BODY, "How the immune system actually works", "Kurzgesagt", 8, "Kurzgesagt immune system explained"),
+        app(Topic.BODY, "Human biology: one lesson", "Khan Academy", "https://www.khanacademy.org/science/biology/human-biology"),
+        v(Topic.BODY, "How does caffeine keep us awake?", "TED-Ed", 5),
+        v(Topic.BODY, "Insulin and blood sugar, animated", "YouTube", 6, "how insulin works animation"),
+        v(Topic.BODY, "PCOS, explained simply", "YouTube", 8, "PCOS explained animation hormones insulin"),
+        v(Topic.BODY, "What happens to your brain when you exercise", "TED-Ed", 5, "TED-Ed brain benefits of exercise"),
+        v(Topic.BODY, "How does your body digest food?", "TED-Ed", 5, "TED-Ed how your digestive system works"),
+        app(Topic.BODY, "Health and medicine: one lesson", "Khan Academy", "https://www.khanacademy.org/science/health-and-medicine"),
+        v(Topic.BODY, "Why do we get hungry?", "TED-Ed", 5, "TED-Ed why do we feel hungry"),
+    )
 
-    private val tech = series(Topic.TECH, "Crash Course Computer Science", 40, 12)
-    private val world = series(Topic.WORLD, "Crash Course World History", 42, 12)
-    private val mind = series(Topic.MIND, "Crash Course Psychology", 40, 11)
+    private val tech: List<Lesson> = listOf(
+        v(Topic.TECH, "How machines learn", "CGP Grey", 9),
+        v(Topic.TECH, "How does a smartphone work?", "Branch Education", 15, "Branch Education how do smartphones work"),
+        app(Topic.TECH, "Coding: one lesson", "Sololearn", play("Sololearn")),
+        v(Topic.TECH, "A.I.: Humanity's final invention?", "Kurzgesagt", 15, "Kurzgesagt AI humanity's final invention"),
+        v(Topic.TECH, "How does the internet work?", "YouTube", 8, "how does the internet work animation"),
+        app(Topic.TECH, "Computer science: one lesson", "Khan Academy", "https://www.khanacademy.org/computing/computer-science"),
+        v(Topic.TECH, "How do computers remember?", "TED-Ed", 5, "TED-Ed how computer memory works"),
+        v(Topic.TECH, "Crash Course Computer Science", "Crash Course", 12, "Crash Course Computer Science early computing"),
+    )
 
-    private val money: List<Lesson> = (1..8).map { i ->
-        Lesson(
-            Topic.MONEY, "Zerodha Varsity · Module 1, chapters ${2 * i - 1}–${2 * i}", "Zerodha Varsity (free)", 20,
-            "https://zerodha.com/varsity/module/introduction-to-stock-markets/", READ,
-        )
-    } + series(Topic.MONEY, "Crash Course Economics", 35, 11)
+    private val world: List<Lesson> = listOf(
+        v(Topic.WORLD, "History of the entire world, I guess", "bill wurtz", 20),
+        v(Topic.WORLD, "The rise and fall of the Mongol Empire", "TED-Ed", 5),
+        app(Topic.WORLD, "Wikipedia rabbit hole: one random article", "Wikipedia", "https://en.wikipedia.org/wiki/Special:Random"),
+        v(Topic.WORLD, "What really happened to the Library of Alexandria?", "TED-Ed", 5),
+        v(Topic.WORLD, "How airlines price their tickets", "Wendover Productions", 12, "Wendover Productions airline ticket pricing"),
+        v(Topic.WORLD, "Why the world map is wrong", "Vox", 6, "Vox why all world maps are wrong"),
+        app(Topic.WORLD, "World history: one lesson", "Khan Academy", "https://www.khanacademy.org/humanities/world-history"),
+        v(Topic.WORLD, "How the Indus Valley Civilisation worked", "YouTube", 10, "Indus Valley Civilisation animated documentary"),
+    )
+
+    private val money: List<Lesson> = listOf(
+        v(Topic.MONEY, "How does the stock market work?", "TED-Ed", 5),
+        v(Topic.MONEY, "What causes economic bubbles?", "TED-Ed", 5),
+        app(Topic.MONEY, "Varsity: one short chapter", "Zerodha Varsity", play("Varsity by Zerodha")),
+        v(Topic.MONEY, "Index funds, explained", "Two Cents (PBS)", 8, "Two Cents PBS index funds"),
+        v(Topic.MONEY, "What is inflation?", "YouTube", 6, "inflation explained animation"),
+        app(Topic.MONEY, "Personal finance: one lesson", "Khan Academy", "https://www.khanacademy.org/college-careers-more/personal-finance"),
+        v(Topic.MONEY, "Compound interest, explained", "Two Cents (PBS)", 7, "compound interest explained animation"),
+        v(Topic.MONEY, "Crash Course Economics", "Crash Course", 11, "Crash Course Economics intro"),
+    )
+
+    private val mind: List<Lesson> = listOf(
+        v(Topic.MIND, "Loneliness", "Kurzgesagt", 9),
+        v(Topic.MIND, "What is imposter syndrome and how can you combat it?", "TED-Ed", 5),
+        v(Topic.MIND, "Optimistic Nihilism", "Kurzgesagt", 7),
+        v(Topic.MIND, "How to be confident", "The School of Life", 6, "The School of Life confidence"),
+        v(Topic.MIND, "The science of habits", "YouTube", 8, "how habits form animation science"),
+        app(Topic.MIND, "Psychology: one lesson", "Khan Academy", "https://www.khanacademy.org/test-prep/mcat/behavior"),
+        v(Topic.MIND, "Why do we dream?", "TED-Ed", 5),
+        v(Topic.MIND, "How stress affects your brain", "TED-Ed", 4),
+    )
 
     private val korean: List<Lesson> = buildList {
         add(Lesson(Topic.LANGUAGE, "Hangul reading practice", "Go! Billy Korean · YouTube", 15, yt("Go Billy Korean Hangul reading practice"),
@@ -149,19 +149,19 @@ object Curriculum {
     }
 
     private val wildcards = listOf(
-        "Hans Rosling The best stats you've ever seen TED" to "The best stats you've ever seen · Hans Rosling",
-        "Tim Urban Inside the mind of a master procrastinator TED" to "Inside the mind of a master procrastinator · Tim Urban",
         "Kurzgesagt The Fermi Paradox Where Are All The Aliens" to "The Fermi Paradox · Kurzgesagt",
-        "Simon Sinek How great leaders inspire action TED" to "How great leaders inspire action · Simon Sinek",
-        "Kurzgesagt Optimistic Nihilism" to "Optimistic Nihilism · Kurzgesagt",
-        "Ken Robinson Do schools kill creativity TED" to "Do schools kill creativity? · Ken Robinson",
         "Kurzgesagt The Immune System Explained Bacteria Infection" to "The immune system explained · Kurzgesagt",
         "Veritasium The Most Misunderstood Concept in Physics" to "The most misunderstood concept in physics · Veritasium",
         "Kurzgesagt What Are You" to "What are you? · Kurzgesagt",
-        "Brene Brown The power of vulnerability TED" to "The power of vulnerability · Brené Brown",
-        "Kurzgesagt Loneliness" to "Loneliness · Kurzgesagt",
         "Vsauce What Is The Speed of Dark" to "What is the speed of dark? · Vsauce",
-    ).map { (q, title) -> Lesson(Topic.WILDCARD, title, "YouTube", 15, yt(q), WATCH) }
+        "Tom Scott the dot that changed the internet" to "A weird corner of the internet · Tom Scott",
+        "Mark Rober glitter bomb" to "A science prank, explained · Mark Rober",
+        "Kurzgesagt the size of the universe" to "How big is the universe? · Kurzgesagt",
+        "TED-Ed the dangers of mixing drugs" to "Why mixing medicines can be risky · TED-Ed",
+        "CGP Grey the trouble with tumbleweed" to "The trouble with tumbleweed · CGP Grey",
+        "Veritasium why trees don't need pumps" to "How trees lift water 100 metres · Veritasium",
+        "TED-Ed how does the Rubik's cube work" to "The maths of the Rubik's cube · TED-Ed",
+    ).map { (q, title) -> Lesson(Topic.WILDCARD, title, "YouTube", 10, yt(q), WATCH) }
 
     /** A beginner series for any language other than Korean (which has its own hand-picked course). */
     private fun languageSeries(lang: String): List<Lesson> = (1..60).map { n ->
@@ -204,9 +204,10 @@ object Curriculum {
         return general.shuffled(rnd).take(2).map { it to null }
     }
 
-    /** Wildcards loop forever; other topics retire once finished. */
+    /** Courses (language, sign language) end; the short picks loop, so learning never runs out. */
     fun lesson(topic: Topic, index: Int, lang: String? = null): Lesson? {
         val list = lessons(topic, lang)
-        return if (topic == Topic.WILDCARD) list[Math.floorMod(index, list.size)] else list.getOrNull(index)
+        if (list.isEmpty()) return null
+        return if (topic == Topic.LANGUAGE || topic == Topic.SIGN) list.getOrNull(index) else list[Math.floorMod(index, list.size)]
     }
 }

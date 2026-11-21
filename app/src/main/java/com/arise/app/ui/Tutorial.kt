@@ -53,15 +53,15 @@ data class TutorialStep(val key: String?, val title: String, val text: String)
 
 fun tutorialSteps(name: String) = listOf(
     TutorialStep(null, "[SYSTEM] Welcome, $name", "A 30-second tour of your System. Tap anywhere to continue."),
-    TutorialStep("header", "The daily quest", "Countdown to midnight, your wake time, and how many quests you've cleared. Tap I'M UP the moment you get out of bed: the morning re-plans around your real wake time. ‹ › move between days."),
-    TutorialStep("allday", "All-day quests", "Water, steps and your language. Tap + as you go, or tap the number to type the exact amount. Partial amounts earn partial XP."),
-    TutorialStep("deck", "Cards due now", "Every quest that's due sits here. Swipe left and right to see them all. Done → XP. Later → back of the deck. Not today → the System asks why and counts it."),
-    TutorialStep("deck", "Routines", "Morning and night routines open a checklist. Tick each step; when everything is done, it completes itself."),
+    TutorialStep("header", "The daily quest", "Your wake time, your core quests, and 📈 how many of the last 30 days were on track. Tap I'M UP the moment you get out of bed: the morning re-plans around your real wake time. ‹ › move between days."),
+    TutorialStep("allday", "All-day quests", "Sleep fills itself in from your phone overnight (tap to correct it). Steps sync from Samsung Health or you type them. Water and your language are side quests."),
+    TutorialStep("deck", "Cards due now", "Your core quests due now: wake, sleep, steps and today's run or strength. Swipe to see them all. Later finds a better time; Not today is fine too. Side quests sit below, folded away and optional."),
+    TutorialStep("deck", "Routines", "Morning and night routines are plain checklists. Tick what you did, skip what you don't feel like, and tap \"Done for today\" when you're finished. Log shows your habit graphs."),
     TutorialStep("deck", "Emergency quests", "⚡ They appear at random times. 30 minutes to do something small. Bonus XP, no penalty."),
     TutorialStep("upnext", "Up next", "Cards join the deck when their time arrives. This shows what's coming."),
-    TutorialStep("fullday", "Tabs", "To-do is the deck. Done and Skipped show what you finished or passed on. Full day is the whole schedule."),
-    TutorialStep("tabs", "Your other tabs", "Train: run and strength coach with voice. Tools: Pomodoro and the screen blocker. Log: growth, sleep, weight, charts. Player: rating, titles, calendar (events!) and settings."),
-    TutorialStep(null, "The rules", "Clear 70% of today's quests to keep your streak. Miss a day and tomorrow starts with a penalty quest. Never miss twice.\n\nARISE."),
+    TutorialStep("fullday", "Tabs", "Due now is the deck. Done and Skipped show what you finished or passed on. Full day is the whole schedule."),
+    TutorialStep("tabs", "Your other tabs", "Train: run and strength coach. To-do: say your tasks into the mic and the System spreads them over your days. Tools: Pomodoro and the screen blocker. Log: habits, sleep, charts. Player: your times, Samsung Health, calendar and events."),
+    TutorialStep(null, "The rules", "Do most of your core quests and the day is on track. A day off is allowed: the next day is just gentler, with one small comeback win. Your level never goes down.\n\nARISE."),
 )
 
 @Composable

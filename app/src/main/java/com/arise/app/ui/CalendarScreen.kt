@@ -56,7 +56,8 @@ fun CalendarScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Unit,
     BackHandler(onBack = onClose)
     var month by remember { mutableStateOf(YearMonth.from(today)) }
     var picking by remember { mutableStateOf<LocalDate?>(null) }
-    var eventFor by remember { mutableStateOf<LocalDate?>(null) }
+    // The day, and which of its events (-1 = a new one).
+    var eventFor by remember { mutableStateOf<Pair<LocalDate, Int>?>(null) }
     val s = data.settings
 
     Column(
@@ -147,18 +148,31 @@ fun CalendarScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Unit,
                         )
                     }
                     Spacer(Modifier.height(4.dp))
-                    val ev = data.records[d]?.event
+                    val evs = data.records[d]?.events.orEmpty()
                     if (current == DayType.OFFICE || current == DayType.SICK) {
                         Text(
-                            "🎉 Events can be added on WFH days, days off and leave. Switch this day first if you're taking it off.",
+                            "🎉 Events go on WFH days, days off and leave. Taking this day off or working from home? Switch it above first.",
                             color = C.Muted, fontSize = 12.sp,
                         )
                     } else {
+                        if (current == DayType.WFH) {
+                            Text("It stays a WFH day: the event sits on top, and quests move around it.", color = C.Muted, fontSize = 12.sp)
+                        }
+                        evs.forEachIndexed { i, e ->
+                            SysButton(
+                                "🎉 ${e.title} · ${fmt(e.start)}–${fmt(e.realEnd)} · edit",
+                                modifier = Modifier.fillMaxWidth(), color = C.Gold, selected = true,
+                                onClick = {
+                                    eventFor = d to i
+                                    picking = null
+                                },
+                            )
+                        }
                         SysButton(
-                            ev?.let { "🎉 ${it.title} · ${fmt(it.start)}–${fmt(it.realEnd)} · edit" } ?: "🎉  Add an event…",
-                            modifier = Modifier.fillMaxWidth(), color = C.Gold, selected = ev != null,
+                            if (evs.isEmpty()) "🎉  Add an event…" else "＋  Add another event",
+                            modifier = Modifier.fillMaxWidth(), color = C.Gold,
                             onClick = {
-                                eventFor = d
+                                eventFor = d to -1
                                 picking = null
                             },
                         )
@@ -168,11 +182,17 @@ fun CalendarScreen(data: AppData, today: LocalDate, onUpdate: (AppData) -> Unit,
             confirmButton = { TextButton(onClick = { picking = null }) { Text("Cancel", color = C.Muted) } },
         )
     }
-    eventFor?.let { d ->
+    eventFor?.let { (d, i) ->
+        val evs = data.records[d]?.events.orEmpty()
         EventDialog(
-            d, data.records[d]?.event,
+            d, evs.getOrNull(i),
             onSave = { e ->
-                onUpdate(data.with(data.day(d).copy(event = e)))
+                val next = when {
+                    e == null -> evs.filterIndexed { j, _ -> j != i }
+                    i in evs.indices -> evs.toMutableList().also { it[i] = e }
+                    else -> evs + e
+                }.sortedBy { it.start }
+                onUpdate(data.with(data.day(d).copy(events = next)))
                 eventFor = null
             },
             onDismiss = { eventFor = null },
@@ -291,6 +311,6 @@ private fun DayCell(d: LocalDate, data: AppData, today: LocalDate, onClick: () -
         verticalArrangement = Arrangement.Center,
     ) {
         Text(d.dayOfMonth.toString(), fontSize = 13.sp, color = if (d < today) C.Muted else C.Text, fontWeight = FontWeight.SemiBold)
-        Text(if (data.records[d]?.event != null) "🎉" else type.icon, fontSize = 14.sp)
+        Text(if (data.records[d]?.events.orEmpty().isNotEmpty()) "🎉" else type.icon, fontSize = 14.sp)
     }
 }

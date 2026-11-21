@@ -114,6 +114,8 @@ data class Taken(
     val time: LocalTime? = null,
     val keep: Boolean = true,
     val quit: LocalDate? = null,
+    /** Last day (weekly challenges end on day 7, 14, 21… of your season). */
+    val end: LocalDate? = null,
 )
 
 data class DayRecord(
@@ -142,12 +144,19 @@ data class DayRecord(
     val runMinutes: Int? = null,
     /** Ticked routine checklist items (morning and night). */
     val routine: Set<String> = emptySet(),
-    val event: Event? = null,
+    /** Events that day (dinner, wedding…). The day keeps its type: WFH plus an event is fine. */
+    val events: List<Event> = emptyList(),
     /** Every skip inside a workout, with the reason. */
     val exSkips: List<ExSkipLog> = emptyList(),
     /** Lesson recall: question → what you said. */
     val answers: Map<String, String> = emptyMap(),
+    /** When sleep ended this morning ("HH:mm"), from screen activity or Health Connect. [bedTime] is when it began. */
+    val sleepEnd: String? = null,
+    /** Where the sleep times came from: "screen", "health" or "manual" (manual is never overwritten). */
+    val sleepSource: String? = null,
 ) {
+    val event: Event? get() = events.firstOrNull()
+
     val steps: Int? get() = amounts["steps"]?.toInt()
     val wake: LocalTime? get() = wakeTime?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
 }
@@ -221,6 +230,28 @@ data class Settings(
     val focusMin: Int = 25,
     /** Every weekly, skill and body challenge ever taken, newest last. */
     val challenges: List<Taken> = emptyList(),
+    // ---- v1.5: your own times. Null = that reminder is off. ----
+    /** Goal: asleep by this time. Compared with the sleep the phone detects; never a quest you tick. */
+    val bedGoal: LocalTime = LocalTime.of(23, 0),
+    /** Sleep goal, in minutes. */
+    val sleepGoalMin: Int = 450,
+    val windDown: LocalTime? = LocalTime.of(22, 30),
+    val checkIn: LocalTime? = LocalTime.of(21, 45),
+    val rescue: LocalTime? = LocalTime.of(11, 0),
+    /** Lesson reminder. The lesson itself is open all day. Null = no reminder. */
+    val lessonAt: LocalTime? = null,
+    val runsPerWeek: Int = 3,
+    val strengthPerWeek: Int = 2,
+    /** The "set your own times" card has been dealt with. */
+    val scheduleSet: Boolean = false,
+    /** Read steps and sleep from Health Connect (Samsung Health). */
+    val healthSync: Boolean = false,
+    /** Work out sleep from when the screen was off overnight (needs Usage access). */
+    val sleepDetect: Boolean = true,
+    /** Quotes you tapped ♡ on (their index). */
+    val favQuotes: Set<Int> = emptySet(),
+    /** First day of a week whose weekly challenge offer was declined. */
+    val weeklyDeclined: LocalDate? = null,
 ) {
     val currentSeasonStart: LocalDate get() = seasonStart ?: start
     /** Office/college days exist. */
@@ -235,9 +266,35 @@ data class Settings(
     fun picked(q: String, option: String): Boolean = option in answer(q)
 }
 
+enum class TaskKind { ONE_OFF, PROJECT }
+
+/** One step of a project, with its share of the whole (percent; shares add up to 100). */
+data class TaskStep(val title: String, val share: Int)
+
+/**
+ * A to-do. One-offs are done or not; projects move in percent. [log] = progress reached by the end of
+ * each day you worked on it, so the System can spread what's left over the days until [deadline].
+ */
+data class Task(
+    val id: String,
+    val title: String,
+    val created: LocalDate,
+    val deadline: LocalDate? = null,
+    val kind: TaskKind = TaskKind.ONE_OFF,
+    val steps: List<TaskStep> = emptyList(),
+    val progress: Int = 0,
+    /** Can be done while watching or listening to something (crochet + drama). */
+    val pairable: Boolean = false,
+    val doneOn: LocalDate? = null,
+    val log: Map<LocalDate, Int> = emptyMap(),
+) {
+    val done: Boolean get() = doneOn != null || progress >= 100
+}
+
 data class AppData(
     val records: Map<LocalDate, DayRecord> = emptyMap(),
     val settings: Settings = Settings(),
+    val tasks: List<Task> = emptyList(),
 ) {
     fun day(date: LocalDate): DayRecord = records[date] ?: DayRecord(date)
     fun with(rec: DayRecord): AppData = copy(records = records + (rec.date to rec))

@@ -74,7 +74,8 @@ import com.arise.app.game.Deck
 import com.arise.app.game.Feats
 import com.arise.app.game.Game
 import com.arise.app.game.Kind
-import com.arise.app.game.Knowledge
+import com.arise.app.game.Quotes
+import com.arise.app.game.Todo
 import com.arise.app.game.Program
 import com.arise.app.game.Progress
 import com.arise.app.game.Quest
@@ -121,6 +122,8 @@ private class QuestActions(
     val coach: (Quest) -> Unit,
     val routine: (Quest) -> Unit,
     val recall: () -> Unit,
+    val sleep: () -> Unit,
+    val task: (Quest) -> Unit,
 )
 
 fun fmtAmount(v: Double, unit: String): String = when (unit) {
@@ -168,7 +171,7 @@ fun TodayScreen(
     val plan = status.plan
     val rec = data.day(date)
     val passesLeft = Game.passesLeft(data, date)
-    val penalty = isToday && Game.penaltyActive(data, date)
+    val comeback = isToday && Game.comebackActive(data, date)
     val lesson = remember(data, date) { Game.lessonFor(data, date) }
 
     // 0 = to-do (the deck), 1 = done, 2 = skipped, 3 = full day.
@@ -178,6 +181,9 @@ fun TodayScreen(
     var laterFor by remember { mutableStateOf<Quest?>(null) }
     var routineFor by remember { mutableStateOf<String?>(null) }
     var recallOpen by remember { mutableStateOf(false) }
+    var sleepOpen by remember { mutableStateOf(false) }
+    var taskFor by remember { mutableStateOf<String?>(null) }
+    var scheduleOpen by remember { mutableStateOf(false) }
     var pop by remember { mutableStateOf<Pair<String, Long>?>(null) }
 
     fun save(r: DayRecord) = onUpdate(data.with(r))
@@ -194,13 +200,13 @@ fun TodayScreen(
         if (isToday && !before.cleared && after.cleared) {
             SystemBus.post(
                 SysMsg(
-                    "DAILY QUEST CLEARED",
+                    "ON TRACK TODAY",
                     listOf(
-                        "${after.doneCount}/${after.total} quests complete. +${after.xp} XP today.",
-                        "Your streak is safe. No penalty tomorrow.",
-                        "Keep going: everything else today is bonus XP.",
+                        "${after.doneCount}/${after.total} core quests. +${after.xp} XP today.",
+                        "You're on track today.",
+                        "Everything else is a bonus. Rest is allowed.",
                     ),
-                    accent = C.Gold, speak = "Daily quest cleared.",
+                    accent = C.Gold, speak = "On track today.",
                 ),
             )
         }
@@ -215,7 +221,15 @@ fun TodayScreen(
 
     val act = QuestActions(
         done = { q, d ->
-            saveWithPop(q, rec.copy(done = if (d == null) rec.done - q.id else rec.done + (q.id to d), skipped = rec.skipped - q.id))
+            when {
+                // A to-do asks how far you got; the lesson asks its recall question.
+                q.id.startsWith("todo_") && d != null -> taskFor = q.id
+                q.id == "learn" && d != null -> {
+                    save(rec.copy(done = rec.done + ("learn" to Done.FULL), skipped = rec.skipped - q.id))
+                    recallOpen = true
+                }
+                else -> saveWithPop(q, rec.copy(done = if (d == null) rec.done - q.id else rec.done + (q.id to d), skipped = rec.skipped - q.id))
+            }
         },
         amount = { q, v ->
             val next = rec.copy(amounts = if (v <= 0.0) rec.amounts - q.id else rec.amounts + (q.id to v), skipped = rec.skipped - q.id)
@@ -253,7 +267,7 @@ fun TodayScreen(
                     amounts = rec.amounts - q.id,
                     skipped = rec.skipped - q.id,
                     wakeTime = if (q.kind == Kind.WAKE) null else rec.wakeTime,
-                    routine = if (q.kind == Kind.ROUTINE) rec.routine - q.items.map { it.id }.toSet() else rec.routine,
+                    routine = rec.routine,
                 ),
             )
         },
@@ -264,6 +278,8 @@ fun TodayScreen(
         },
         routine = { q -> routineFor = q.id },
         recall = { recallOpen = true },
+        sleep = { sleepOpen = true },
+        task = { q -> taskFor = q.id },
     )
 
     Box(Modifier.fillMaxSize()) {
@@ -275,7 +291,7 @@ fun TodayScreen(
             item {
                 Box(Modifier.tutorialTarget("header")) {
                     DailyQuestHeader(
-                        data, date, today, plan, status, rec, progress, locked, penalty,
+                        data, date, today, plan, status, rec, progress, locked, comeback,
                         onPrev = { date = date.minusDays(1) },
                         onNext = { date = date.plusDays(1) },
                     )
@@ -288,7 +304,7 @@ fun TodayScreen(
                         SysLabel("[System] Day 1 begins tomorrow", C.Gold)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "This is a preview of Day 1. Tonight's only real quest: phone away by 10:30, lights off by 11:30. Lay out your workout clothes.",
+                            "This is a preview of Day 1. Tonight: phone away, and aim to be asleep by ${fmt(s.bedGoal)}. Lay out your workout clothes.",
                             color = C.Text2, fontSize = 13.sp,
                         )
                     }
@@ -298,30 +314,36 @@ fun TodayScreen(
             if (isToday && plan.notes.isNotEmpty()) {
                 item { NotesPanel(plan.notes) }
             }
-            if (deckMode && s.challenges.none { it.kind == com.arise.app.data.ChallengeKind.WEEKLY && Challenges.running(it, today) }) {
+            if (isToday && today >= s.start) {
+                item { QuoteCard(data, date, onUpdate) }
+            }
+            if (isToday && !s.scheduleSet) {
                 item {
-                    val picks = Challenges.offers(today)
-                    Panel(accent = C.Gold, modifier = Modifier.clickable(onClick = openChallenges)) {
-                        SysLabel("[System] Weekly challenge available", C.Gold)
+                    Panel(accent = C.Glow) {
+                        SysLabel("[System] Make the day yours")
                         Spacer(Modifier.height(4.dp))
-                        Text(picks.joinToString("  ·  ") { "${it.icon} ${it.title}" }, fontSize = 13.sp, color = C.Text2)
-                        Text("+${Challenges.WEEKLY_DAY_XP} XP per day kept, ${Challenges.WEEKLY_XP} for a perfect week. Tap to choose.", color = C.Muted, fontSize = 11.sp)
+                        Text("Choose your own reminder times, bedtime goal, sleep goal and how many runs and strength sessions a week.", color = C.Text2, fontSize = 13.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SysButton("Set my times", selected = true, onClick = { scheduleOpen = true })
+                            SysButton("Later", color = C.Muted, small = true, onClick = { onUpdate(data.copy(settings = s.copy(scheduleSet = true))) })
+                        }
                     }
                 }
             }
-
-            if (penalty) {
+            if (comeback) {
                 item {
-                    val pq = Game.penaltyQuest
+                    val pq = Game.comebackQuest
                     val done = rec.done.containsKey(pq.id)
-                    Panel(accent = if (done) C.Good else C.Danger, glow = !done) {
-                        SysLabel("[System] Penalty quest", C.Danger)
+                    Panel(accent = C.Good) {
+                        SysLabel("[System] Gentle day", C.Good)
                         Spacer(Modifier.height(4.dp))
-                        Text("Yesterday wasn't cleared. Never miss twice.", color = C.Text2, fontSize = 13.sp)
+                        Text("Yesterday was a rest. That's allowed. Today the goals are lighter.", color = C.Text2, fontSize = 13.sp)
+                        Text(Quotes.forComeback(date).line, color = C.Muted, fontSize = 12.sp)
                         Spacer(Modifier.height(6.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text(pq.title, fontWeight = FontWeight.SemiBold)
+                                Text(pq.title + " · bonus", fontWeight = FontWeight.SemiBold)
                                 Text(pq.full, color = C.Text2, fontSize = 13.sp)
                             }
                             SysButton(
@@ -334,25 +356,19 @@ fun TodayScreen(
                 }
             }
 
-            val weekPen = if (isToday) Challenges.weeklyPenalty(data, date) else null
-            if (weekPen != null) {
+            val offer = if (isToday) Challenges.weeklyOffer(data, date) else null
+            if (offer != null) {
                 item {
-                    val pq = Challenges.weeklyPenaltyQuest
-                    val done = rec.done.containsKey(pq.id)
-                    Panel(accent = if (done) C.Good else C.Danger, glow = !done) {
-                        SysLabel("[System] Weekly penalty", C.Danger)
+                    Panel(accent = C.Gold) {
+                        SysLabel("[System] Optional weekly challenge", C.Gold)
                         Spacer(Modifier.height(4.dp))
-                        Text(
-                            "${Challenges.title(weekPen)}: kept ${Challenges.kept(data, weekPen, date)} of 7 days.",
-                            color = C.Text2, fontSize = 13.sp,
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(pq.title, fontWeight = FontWeight.SemiBold)
-                                Text(pq.full, color = C.Text2, fontSize = 13.sp)
-                            }
-                            SysButton(if (done) "✓ Done" else "Done", onClick = { act.done(pq, if (done) null else Done.FULL) }, selected = done, color = C.Good)
+                        Text("${offer.icon} ${offer.title}", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                        Text(offer.rule, color = C.Text2, fontSize = 13.sp)
+                        Text("Bonus XP for every day you keep it. Nothing happens if you don't.", color = C.Muted, fontSize = 12.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SysButton("Accept", selected = true, color = C.Gold, onClick = { onUpdate(Challenges.acceptWeekly(data, date, offer)) })
+                            SysButton("Not this week", color = C.Muted, small = true, onClick = { onUpdate(Challenges.declineWeekly(data, date)) })
                         }
                     }
                 }
@@ -366,10 +382,10 @@ fun TodayScreen(
             val doneQs = settledQs.filter { !rec.skipped.containsKey(it.id) }
             val skippedQs = settledQs.filter { rec.skipped.containsKey(it.id) }
             if (deckMode) {
-                val cards = Deck.cards(data, date, now)
+                val cards = Deck.core(data, date, now)
                 item {
                     Row(Modifier.tutorialTarget("fullday"), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("To-do ${cards.size}", "Done ${doneQs.size}", "Skipped ${skippedQs.size}", "Full day").forEachIndexed { i, label ->
+                        listOf("Now ${cards.size}", "Done ${doneQs.size}", "Skipped ${skippedQs.size}", "Full day").forEachIndexed { i, label ->
                             SysButton(label, small = true, selected = view == i, onClick = { view = i },
                                 color = when (i) {
                                     1 -> C.Good
@@ -381,12 +397,16 @@ fun TodayScreen(
                 }
             }
             if (deckMode && view == 0) {
-                val cards = Deck.cards(data, date, now)
+                val cards = Deck.core(data, date, now)
+                val side = Deck.side(data, date, now)
                 val snoozed = Deck.snoozed(data, date, now)
                 item {
                     Box(Modifier.tutorialTarget("deck")) {
                         DeckSection(cards, date, rec, lesson, passesLeft, now, act)
                     }
+                }
+                if (side.isNotEmpty()) {
+                    item { SideQuests(side, date, rec, lesson, passesLeft, now, act) }
                 }
                 if (snoozed.isNotEmpty()) {
                     item { LaterPile(snoozed, act) }
@@ -408,7 +428,7 @@ fun TodayScreen(
                 }
             } else if (deckMode && view == 2) {
                 item {
-                    if (skippedQs.isEmpty()) Text("No skips today. Keep it that way.", color = C.Muted, fontSize = 13.sp)
+                    if (skippedQs.isEmpty()) Text("No skips today.", color = C.Muted, fontSize = 13.sp)
                     else SettledList("✗ Skipped", skippedQs, rec, act, C.Muted, startOpen = true)
                 }
             } else {
@@ -428,9 +448,6 @@ fun TodayScreen(
                 }
             }
 
-            item {
-                KnowledgeCard(Knowledge.forDay(s.earliest, date))
-            }
             item { Spacer(Modifier.height(24.dp)) }
         }
 
@@ -449,27 +466,47 @@ fun TodayScreen(
                 q, rec,
                 onToggle = { itemId ->
                     val ticked = if (itemId in rec.routine) rec.routine - itemId else rec.routine + itemId
-                    val next = rec.copy(routine = ticked, skipped = rec.skipped - q.id)
-                    val wasDone = Game.ratio(q, rec) >= 1f
-                    saveWithPop(q, next)
-                    if (!wasDone && Game.ratio(q, next) >= 1f) {
-                        routineFor = null
-                        val upNext = Deck.upNext(data.with(next), date, LocalTime.now())
-                        SystemBus.post(
-                            SysMsg(
-                                "${q.title.uppercase()} COMPLETE",
-                                listOfNotNull(
-                                    "+${q.xp} ${q.stat.label} XP",
-                                    if (q.id == "night") "Phone away. Lights off. Tomorrow starts now." else "The body is ready. Begin the day.",
-                                    upNext?.let { "Next: ${fmt(it.time)} · ${it.quest?.title ?: it.title}" },
-                                ),
-                                accent = C.Good, speak = "${q.title} complete.",
-                            ),
-                        )
-                    }
+                    save(rec.copy(routine = ticked, skipped = rec.skipped - q.id))
+                },
+                onDone = {
+                    routineFor = null
+                    saveWithPop(q, rec.copy(done = rec.done + (q.id to Done.FULL), skipped = rec.skipped - q.id))
                 },
                 onClose = { routineFor = null },
             )
+        }
+    }
+    if (sleepOpen) {
+        SleepDialog(rec, s.sleepGoalMin, onSave = { bed, end ->
+            sleepOpen = false
+            val q = plan.quests.firstOrNull { it.kind == Kind.SLEEP }
+            val next = rec.copy(bedTime = bed, sleepEnd = end, sleepSource = "manual")
+            if (q != null) saveWithPop(q, next) else save(next)
+        }, onDismiss = { sleepOpen = false })
+    }
+    if (scheduleOpen) {
+        ScheduleDialog(data.settings, onSave = { ns ->
+            scheduleOpen = false
+            onUpdate(data.copy(settings = ns.copy(scheduleSet = true)))
+        }, onDismiss = { scheduleOpen = false })
+    }
+    taskFor?.let { qid ->
+        val t = Todo.taskOf(data, qid)
+        if (t == null) {
+            taskFor = null
+        } else {
+            TaskProgressDialog(t, onSave = { pct ->
+                taskFor = null
+                val q = plan.quests.firstOrNull { it.id == qid }
+                val withTask = Todo.setProgress(data, t.id, pct, date)
+                val r = rec.copy(done = rec.done + (qid to Done.FULL), skipped = rec.skipped - qid)
+                if (q != null) {
+                    val gained = Game.xpFor(q, r) - Game.xpFor(q, rec)
+                    if (gained > 0) pop = "+$gained ${q.stat.label} XP" to System.currentTimeMillis()
+                }
+                onUpdate(withTask.with(r))
+                if (pct >= 100) SystemBus.post(SysMsg("TASK COMPLETE", listOf(t.title, "Done. That's one off your mind."), accent = C.Gold, speak = "Task complete."))
+            }, onDismiss = { taskFor = null })
         }
     }
     if (recallOpen) {
@@ -549,7 +586,7 @@ fun TodayScreen(
             title = { Text("Not today: ${q.title}") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Why? The System counts every skip and looks for patterns.", color = C.Text2, fontSize = 13.sp)
+                    Text("No judgement. A reason just helps spot patterns (and to-dos come back tomorrow).", color = C.Text2, fontSize = 13.sp)
                     Skip.entries.forEach { reason ->
                         SysButton("${reason.icon}  ${reason.label}", modifier = Modifier.fillMaxWidth(), onClick = {
                             save(rec.copy(skipped = rec.skipped + (q.id to reason)))
@@ -574,7 +611,7 @@ private fun DailyQuestHeader(
     rec: DayRecord,
     progress: Progress,
     locked: Boolean,
-    penalty: Boolean,
+    comeback: Boolean,
     onPrev: () -> Unit,
     onNext: () -> Unit,
 ) {
@@ -587,11 +624,11 @@ private fun DailyQuestHeader(
             delay(1000)
         }
     }
-    SystemWindow(accent = if (penalty) C.Danger else C.Glow) {
+    SystemWindow(accent = if (comeback) C.Good else C.Glow) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             SysButton("‹", onClick = onPrev, enabled = date > s.earliest, small = true)
             Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
-                SysLabel(if (locked) "[System] Upcoming · locked" else "[System] Daily quest", if (penalty) C.Danger else C.Glow)
+                SysLabel(if (locked) "[System] Upcoming · locked" else if (comeback) "[System] Daily quest · gentle day" else "[System] Daily quest", if (comeback) C.Good else C.Glow)
                 Text(date.format(dayFmt), fontSize = 19.sp, fontWeight = FontWeight.Bold)
                 val dayNo = Season.day(s, date)
                 Text(
@@ -610,7 +647,7 @@ private fun DailyQuestHeader(
             Text("Lv ${progress.level}", fontFamily = Mono, fontWeight = FontWeight.Bold, color = C.Glow)
             Text(" · ${progress.rank}-Rank", fontFamily = Mono, color = C.Text2, fontSize = 13.sp)
             Spacer(Modifier.weight(1f))
-            Text("🔥 ${progress.streak}", fontFamily = Mono, color = C.Gold)
+            Text("📈 ${progress.consistency}/${progress.consistencyOf}", fontFamily = Mono, color = C.Gold)
             Spacer(Modifier.width(10.dp))
             Text("+${status.xp} XP", color = C.Glow, fontFamily = Mono, fontWeight = FontWeight.Bold)
         }
@@ -631,7 +668,7 @@ private fun DailyQuestHeader(
                 Text("☀ Not up yet · goal ${fmt(goalT)}", color = C.Muted, fontSize = 13.sp, fontFamily = Mono)
             }
         }
-        rec.event?.let { e ->
+        rec.events.forEach { e ->
             Text("🎉 ${e.title} · ${fmt(e.start)}–${fmt(e.realEnd)}", color = C.Gold, fontSize = 13.sp, fontFamily = Mono)
         }
 
@@ -642,9 +679,9 @@ private fun DailyQuestHeader(
                 Text("${status.doneCount}/${status.total}", fontWeight = FontWeight.Bold, fontSize = 22.sp, fontFamily = Mono)
                 Text(
                     when {
-                        status.sick -> "  sick day: rest, no penalty"
-                        status.cleared -> "  cleared ✓"
-                        else -> "  clear $need to keep the streak"
+                        status.sick -> "  sick day: rest"
+                        status.cleared -> "  on track ✓"
+                        else -> "  core · $need to be on track"
                     },
                     color = if (status.cleared) C.Good else C.Text2, fontSize = 12.sp,
                     modifier = Modifier.padding(bottom = 3.dp),
@@ -656,7 +693,7 @@ private fun DailyQuestHeader(
                         Text("REMAINING", color = C.Muted, fontSize = 9.sp, fontFamily = Mono, letterSpacing = 2.sp)
                         Text(
                             "%02d:%02d:%02d".format(left / 3600, (left / 60) % 60, left % 60),
-                            color = if (left < 3 * 3600 && !status.cleared) C.Danger else C.Text, fontFamily = Mono, fontWeight = FontWeight.Bold,
+                            color = C.Text, fontFamily = Mono, fontWeight = FontWeight.Bold,
                         )
                     }
                 }
@@ -668,8 +705,8 @@ private fun DailyQuestHeader(
             if (isToday && !status.cleared && !status.sick) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "⚠ WARNING: Failing to clear the daily quest brings a penalty tomorrow.",
-                    color = C.Danger, fontSize = 11.sp, fontFamily = Mono,
+                    "Not on track yet. Any small step counts, and one off day never undoes your progress.",
+                    color = C.Muted, fontSize = 11.sp,
                 )
             }
         }
@@ -718,14 +755,18 @@ private fun AllDayBox(quests: List<Quest>, rec: DayRecord, locked: Boolean, act:
     Panel(modifier) {
         SysLabel("All day")
         quests.forEach { q ->
+            Spacer(Modifier.height(10.dp))
+            if (q.kind == Kind.SLEEP) {
+                SleepRow(q, rec, locked, act)
+                return@forEach
+            }
             val v = rec.amounts[q.id] ?: 0.0
             val r = Game.ratio(q, rec)
-            Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(q.icon, fontSize = 18.sp, modifier = Modifier.width(30.dp))
                 Column(Modifier.weight(1f).clickable(enabled = !locked) { act.askAmount(q) }) {
                     Row(verticalAlignment = Alignment.Bottom) {
-                        Text(q.title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        Text(q.title + if (q.optional) " ·side" else "", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                         Text(
                             "  ${fmtAmount(v, q.unit)} / ${fmtAmount(q.target, q.unit)} ${q.unit}",
                             color = if (r >= 1f) C.Good else C.Text2, fontFamily = Mono, fontSize = 12.sp,
@@ -740,6 +781,85 @@ private fun AllDayBox(quests: List<Quest>, rec: DayRecord, locked: Boolean, act:
                 SysButton("+${fmtAmount(q.step, q.unit)}", small = true, enabled = !locked, onClick = { act.amount(q, v + q.step) })
             }
         }
+    }
+}
+
+/** Last night's sleep: detected, never ticked. Tap to correct. */
+@Composable
+private fun SleepRow(q: Quest, rec: DayRecord, locked: Boolean, act: QuestActions) {
+    val ctx = LocalContext.current
+    val mins = Game.sleptMin(rec)
+    val r = Game.ratio(q, rec)
+    val ok = Game.counts(q, rec)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(q.icon, fontSize = 18.sp, modifier = Modifier.width(30.dp))
+        Column(Modifier.weight(1f).clickable(enabled = !locked) { act.sleep() }) {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text("Sleep", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(
+                    if (mins != null) "  ${mins / 60}h ${mins % 60}m / ${q.target.toInt() / 60}h${if (q.target.toInt() % 60 > 0) " ${q.target.toInt() % 60}m" else ""}" else "  not detected yet",
+                    color = if (ok) C.Good else C.Text2, fontFamily = Mono, fontSize = 12.sp,
+                )
+            }
+            val src = when (rec.sleepSource) {
+                "health" -> "from Samsung Health"
+                "screen" -> "from your screen overnight"
+                "manual" -> "set by you"
+                else -> null
+            }
+            if (mins != null) {
+                Text("${rec.bedTime?.let { fmt(LocalTime.parse(it)) }} → ${(rec.sleepEnd ?: rec.wakeTime)?.let { fmt(LocalTime.parse(it)) }}" + (src?.let { " · $it" } ?: ""), color = C.Muted, fontSize = 11.sp)
+            }
+            Spacer(Modifier.height(4.dp))
+            XpBar(r, if (ok) C.Good else C.Glow, height = 4.dp)
+        }
+        Spacer(Modifier.width(8.dp))
+        if (mins == null && !com.arise.app.notify.Health.hasUsageAccess(ctx)) {
+            SysButton("Turn on", small = true, enabled = !locked, onClick = { runCatching { ctx.startActivity(com.arise.app.notify.Health.usageAccessIntent()) } })
+        } else {
+            SysButton("Edit", small = true, enabled = !locked, color = C.Muted, onClick = { act.sleep() })
+        }
+    }
+    if (mins == null && !locked) {
+        Text("Arise reads when your screen went off and came on again, so you never have to tap \"going to sleep\". Turn on Usage access for Arise once.", color = C.Muted, fontSize = 11.sp)
+    }
+}
+
+/** Side quests open now: optional, bonus XP, nothing happens if you leave them. */
+@Composable
+private fun SideQuests(cards: List<Block>, date: LocalDate, rec: DayRecord, lesson: DayLesson?, passesLeft: Int, now: LocalTime, act: QuestActions) {
+    var open by rememberSaveable { mutableStateOf(false) }
+    Panel(accent = C.Border) {
+        Row(Modifier.fillMaxWidth().clickable { open = !open }, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Side quests · ${cards.size} open", color = C.Good, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(cards.joinToString(" · ") { it.quest!!.title }, color = C.Muted, fontSize = 12.sp, maxLines = 2)
+            }
+            Text(if (open) "▴" else "▾", color = C.Muted)
+        }
+        if (open) {
+            Spacer(Modifier.height(10.dp))
+            Text("Optional. Bonus XP if you do them, nothing at all if you don't.", color = C.Muted, fontSize = 11.sp)
+            Spacer(Modifier.height(8.dp))
+            DeckSection(cards, date, rec, lesson, passesLeft, now, act)
+        }
+    }
+}
+
+/** Today's quote, with ♡ to see it more often. */
+@Composable
+private fun QuoteCard(data: AppData, date: LocalDate, onUpdate: (AppData) -> Unit) {
+    val (i, q) = Quotes.forDay(data.settings, date)
+    val fav = i in data.settings.favQuotes
+    Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(q.line, color = C.Text2, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Text(
+            if (fav) "♥" else "♡", color = if (fav) C.Gold else C.Muted, fontSize = 20.sp,
+            modifier = Modifier.padding(start = 10.dp).clickable {
+                val favs = data.settings.favQuotes
+                onUpdate(data.copy(settings = data.settings.copy(favQuotes = if (fav) favs - i else favs + i)))
+            },
+        )
     }
 }
 
@@ -832,7 +952,7 @@ private fun DeckCard(b: Block, date: LocalDate, rec: DayRecord, lesson: DayLesso
             Text("+${q.xp} ${q.stat.label}", color = C.Glow, fontFamily = Mono, fontSize = 12.sp)
         }
         Row {
-            if (q.optional) Text("BONUS · doesn't count against you  ", color = C.Good, fontSize = 10.sp, fontFamily = Mono)
+            if (q.optional) Text("SIDE QUEST · optional  ", color = C.Good, fontSize = 10.sp, fontFamily = Mono)
             Spacer(Modifier.weight(1f))
             timeLeft(b, rec, now)?.let { (t, c) -> Text(t, color = c, fontSize = 11.sp, fontFamily = Mono) }
         }
@@ -881,14 +1001,14 @@ private fun DeckCard(b: Block, date: LocalDate, rec: DayRecord, lesson: DayLesso
 
 @Composable
 private fun RoutinePreview(q: Quest, rec: DayRecord) {
-    val need = q.items.filter { !it.optional }
-    val done = need.count { it.id in rec.routine }
+    val done = q.items.count { it.id in rec.routine }
     Column(
         Modifier.fillMaxWidth().background(C.Bg.copy(alpha = 0.6f), RoundedCornerShape(10.dp)).padding(10.dp),
     ) {
-        Text("$done / ${need.size} done", color = if (done == need.size) C.Good else C.Gold, fontFamily = Mono, fontSize = 12.sp)
-        Spacer(Modifier.height(4.dp))
-        XpBar(if (need.isEmpty()) 0f else done.toFloat() / need.size, C.Good, height = 4.dp)
+        Text(
+            if (rec.done.containsKey(q.id)) "Done for today ✓ · $done ticked" else "$done of ${q.items.size} ticked so far",
+            color = if (rec.done.containsKey(q.id)) C.Good else C.Gold, fontFamily = Mono, fontSize = 12.sp,
+        )
         Spacer(Modifier.height(6.dp))
         Text(q.items.joinToString("  ") { (if (it.id in rec.routine) "✓" else it.icon) }, fontSize = 16.sp)
     }
@@ -904,11 +1024,22 @@ private fun PrimaryActions(q: Quest, rec: DayRecord, passesLeft: Int, locked: Bo
                 selected = rec.wakeTime != null, color = C.Good, onClick = { if (rec.wakeTime == null) act.wake(LocalTime.now()) else act.pickWake() })
         }
         Kind.ROUTINE -> {
-            val full = Game.ratio(q, rec) >= 1f
-            SysButton(if (full) "✓ Complete" else "Open checklist ▶", enabled = en, selected = full, color = C.Good, onClick = { act.routine(q) })
+            val full = rec.done.containsKey(q.id)
+            SysButton(if (full) "✓ Done for today" else "Open checklist ▶", enabled = en, selected = full, color = C.Good, onClick = { act.routine(q) })
         }
+        Kind.SLEEP -> SysButton("Edit sleep", enabled = en, color = C.Muted, onClick = act.sleep)
         Kind.CHECK -> {
             if (coachTarget(q) != null) SysButton("Coach ▶", enabled = en, onClick = { act.coach(q) })
+            if (q.id == "learn") {
+                val recalled = rec.done.containsKey("recall")
+                SysButton(if (recalled) "✓ Learned" else "I watched it · recall ▶", enabled = en, selected = recalled, color = C.Good, onClick = act.recall)
+                return
+            }
+            if (q.id.startsWith("todo_")) {
+                val logged = rec.done.containsKey(q.id)
+                SysButton(if (logged) "✓ Update progress" else "Log progress", enabled = en, selected = logged, color = C.Good, onClick = { act.task(q) })
+                return
+            }
             val state = rec.done[q.id]
             if (q.min != null) {
                 SysButton(
@@ -1039,7 +1170,7 @@ private fun FullDayRow(
             Text(fmt(b.time), color = C.Muted, fontFamily = Mono, fontSize = 12.sp, modifier = Modifier.width(72.dp))
             Text(q.icon, modifier = Modifier.width(28.dp))
             Text(
-                q.title + if (q.optional) " ·bonus" else "",
+                q.title + if (q.optional) " ·side" else "",
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 15.sp,
                 color = if (r >= 1f || skipped != null) C.Text2 else C.Text,
@@ -1050,10 +1181,8 @@ private fun FullDayRow(
                 locked -> "🔒"
                 skipped != null -> "${skipped.icon} skipped"
                 q.kind == Kind.WAKE -> rec.wake?.let { fmt(it) } ?: "—"
-                q.kind == Kind.ROUTINE -> {
-                    val need = q.items.filter { !it.optional }
-                    "${need.count { it.id in rec.routine }}/${need.size}"
-                }
+                q.kind == Kind.ROUTINE -> if (rec.done.containsKey(q.id)) "✓" else "${q.items.count { it.id in rec.routine }}/${q.items.size}"
+                q.kind == Kind.SLEEP -> Game.sleptMin(rec)?.let { "${it / 60}h${it % 60}m" } ?: "—"
                 q.kind == Kind.AMOUNT -> "${fmtAmount(rec.amounts[q.id] ?: 0.0, q.unit)}/${fmtAmount(q.target, q.unit)}"
                 rec.done[q.id] == Done.FULL -> "✓"
                 rec.done[q.id] == Done.MIN -> "Min"
@@ -1082,34 +1211,10 @@ private fun FullDayRow(
     }
 }
 
-/** Daily knowledge as a quiz: guess first, then reveal. */
+/** The routine checklist: tick what you did. Nothing is compulsory; "Done for today" when you're finished. */
 @Composable
-private fun KnowledgeCard(card: com.arise.app.game.Card) {
-    var revealed by remember(card) { mutableStateOf(false) }
-    Panel(accent = C.Gold) {
-        SysLabel("Daily knowledge · ${card.field}", C.Gold)
-        Spacer(Modifier.height(6.dp))
-        Text(card.question, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(8.dp))
-        if (!revealed) {
-            Text("Guess first, out loud. Then reveal.", color = C.Muted, fontSize = 12.sp)
-            Spacer(Modifier.height(8.dp))
-            SysButton("Reveal the answer ›", onClick = { revealed = true }, color = C.Gold, small = true)
-        } else {
-            Text(card.answer, color = C.Gold, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            Text(card.story, color = C.Text2, fontSize = 13.sp)
-            Spacer(Modifier.height(8.dp))
-            Text("Tell someone this today. Explaining it is how it sticks.", color = C.Muted, fontSize = 11.sp)
-        }
-    }
-}
-
-/** The routine checklist: big rows, tap to tick. Closes itself when everything required is done. */
-@Composable
-private fun RoutineDialog(q: Quest, rec: DayRecord, onToggle: (String) -> Unit, onClose: () -> Unit) {
-    val need = q.items.filter { !it.optional }
-    val done = need.count { it.id in rec.routine }
+private fun RoutineDialog(q: Quest, rec: DayRecord, onToggle: (String) -> Unit, onDone: () -> Unit, onClose: () -> Unit) {
+    val done = q.items.count { it.id in rec.routine }
     AlertDialog(
         onDismissRequest = onClose,
         containerColor = C.Panel,
@@ -1117,9 +1222,8 @@ private fun RoutineDialog(q: Quest, rec: DayRecord, onToggle: (String) -> Unit, 
             Column {
                 SysLabel("[System] ${q.title}", if (q.id == "night") C.Glow else C.Gold)
                 Spacer(Modifier.height(4.dp))
-                Text("$done / ${need.size}", fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 26.sp)
-                Spacer(Modifier.height(6.dp))
-                XpBar(if (need.isEmpty()) 0f else done.toFloat() / need.size, C.Good)
+                Text("$done ticked", fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 22.sp)
+                Text("Tick what you did. Skip anything you don't feel like today. Your habit graphs are in the Log tab.", color = C.Muted, fontSize = 12.sp)
             }
         },
         text = {
@@ -1135,20 +1239,52 @@ private fun RoutineDialog(q: Quest, rec: DayRecord, onToggle: (String) -> Unit, 
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(item.icon, fontSize = 22.sp, modifier = Modifier.width(36.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                item.label, fontSize = 15.sp,
-                                color = if (on) C.Text2 else C.Text,
-                                textDecoration = if (on) TextDecoration.LineThrough else TextDecoration.None,
-                            )
-                            if (item.optional) Text("optional", color = C.Muted, fontSize = 11.sp)
-                        }
+                        Text(
+                            item.label, fontSize = 15.sp, modifier = Modifier.weight(1f),
+                            color = if (on) C.Text2 else C.Text,
+                            textDecoration = if (on) TextDecoration.LineThrough else TextDecoration.None,
+                        )
                         Text(if (on) "☑" else "☐", color = if (on) C.Good else C.Muted, fontSize = 22.sp)
                     }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onClose) { Text("Close", color = C.Muted) } },
+        confirmButton = { TextButton(onClick = onDone) { Text("Done for today", color = C.Good) } },
+        dismissButton = { TextButton(onClick = onClose) { Text("Close", color = C.Muted) } },
+    )
+}
+
+/** Correct last night's sleep: when you fell asleep and when you woke up. */
+@Composable
+private fun SleepDialog(rec: DayRecord, goalMin: Int, onSave: (String, String) -> Unit, onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    var bed by remember { mutableStateOf(rec.bedTime?.let { LocalTime.parse(it) } ?: LocalTime.of(23, 30)) }
+    var end by remember { mutableStateOf((rec.sleepEnd ?: rec.wakeTime)?.let { LocalTime.parse(it) } ?: LocalTime.of(7, 0)) }
+    fun pick(t: LocalTime, set: (LocalTime) -> Unit) = TimePickerDialog(ctx, { _, h, m -> set(LocalTime.of(h, m)) }, t.hour, t.minute, false).show()
+    var mins = end.toSecondOfDay() / 60 - bed.toSecondOfDay() / 60
+    if (mins <= 0) mins += 24 * 60
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = C.Panel,
+        title = { Text("😴 Last night") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Fell asleep", modifier = Modifier.width(110.dp))
+                    SysButton(fmt(bed), onClick = { pick(bed) { bed = it } })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Woke up", modifier = Modifier.width(110.dp))
+                    SysButton(fmt(end), onClick = { pick(end) { end = it } })
+                }
+                Text("${mins / 60}h ${mins % 60}m · goal ${goalMin / 60}h${if (goalMin % 60 > 0) " ${goalMin % 60}m" else ""}", color = C.Text2, fontFamily = Mono)
+                Text("Your correction is kept; detection won't overwrite it.", color = C.Muted, fontSize = 11.sp)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave("%02d:%02d".format(bed.hour, bed.minute), "%02d:%02d".format(end.hour, end.minute)) }) { Text("Save", color = C.Glow) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = C.Muted) } },
     )
 }
 

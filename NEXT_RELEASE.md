@@ -1,7 +1,53 @@
+# v1.5 (built, not yet tested on the phone)
+
+## Core vs side quests
+- [x] Only 4 core quests count for being on track: wake (I'M UP), sleep (detected), steps, and today's run or strength.
+- [x] Everything else is a side quest: folded away on Today, half XP, never counts against you, mostly silent.
+
+## No guilt
+- [x] No penalty quests. After an off day: a gentle day (lower step goal) and an optional comeback quest.
+- [x] Headline number is consistency: days on track in the last 30. Streak is still shown, smaller.
+- [x] Levels never go down. Kinder wording everywhere.
+
+## Sleep and steps without ticking
+- [x] Sleep detected from screen-off time overnight (Usage access) or Samsung Health (Health Connect). Tap to correct.
+- [x] Bedtime is a goal you set, not a quest. Sleep goal in hours.
+- [x] Steps from Samsung Health via Health Connect (Player → Connect Samsung Health).
+
+## Your own times
+- [x] Player → Your times: bedtime goal, sleep goal, wind-down, evening check-in, morning rescue, learning reminder (each can be off).
+- [x] Runs and strength per week; the System spreads them, and a missed one moves to the next free day.
+
+## Notifications
+- [x] One notification per quest: the 20-minute follow-up replaces the first instead of adding another.
+- [x] No "Player has awakened" second notification; no notification + pop-up doubles.
+- [x] Ticking a quest anywhere (Full day, widget, notification) removes its notification.
+
+## Events
+- [x] Several events per day, on WFH days, days off and leave. The day keeps its type (WFH + event).
+
+## Routines
+- [x] Plain checklists: tick what you did, "Done for today" when you decide. Never completes itself.
+- [x] Log → Habits: 4 weeks of dots per routine item, this week's count, current run.
+
+## Learning
+- [x] One "Learn something" side quest, open all day: short animated videos and free apps, by your topics. No long talks.
+- [x] Counts once you answer the recall question. Daily knowledge card removed.
+
+## To-do tab
+- [x] Speak several tasks at once; deadlines from phrases ("before Nov 7", "by Friday", "tomorrow", "in 3 days").
+- [x] Built-in step plans (thesis, assignment, exam, presentation, crochet/craft, cleaning, reading, course, coding).
+- [x] Projects: daily aim = what's left ÷ days left; you log % done; ahead = lighter days, missed = comes back.
+- [x] One-offs, Someday list (no deadline), "with a show" pairing for evening slots, Reschedule via Later.
+
+## Other
+- [x] Weekly challenge is an offer you accept or skip. No penalty.
+- [x] 125 gentle quotes: Today, wake pop-up, gentle days, level-ups, widget. ♡ favourites come back more often.
+
 # v1.4 (built, not yet tested on a phone)
 
 ## Challenges (Tools → Challenges, or the card on Today)
-- [x] Weekly: 16 seven-day rules (no added sugar, no junk, no phone in bed, 10k steps…). 3 picks a week.
+- [x] Weekly: 16 rules (no added sugar, no junk, no phone in bed, 10k steps…). The System assigns one at random every week of your season (days 1-7, 8-14, 15-21…). No repeats until all 16 are done. Joins the schedule automatically.
       9:30 PM check-in "Kept it today?". The week always runs all 7 days: +20 XP per day kept, 150 for 7/7
       ("Iron Will"); fewer than 4 days kept = a penalty quest the day after the week ends.
 - [x] Monthly skill: 12 skills (piano, guitar, abacus, chess, typing, drawing, coding, Rubik's, ASL, singing,

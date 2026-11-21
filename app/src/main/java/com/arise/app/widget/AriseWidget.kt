@@ -42,7 +42,10 @@ private data class Snap(
     val total: Int,
     val streak: Int,
     val next: String,
+    /** The day after a rest day. */
     val penalty: Boolean,
+    val quote: String = "",
+    val onTrack: String = "",
     /** Today's wake-up hasn't been tapped yet, and it's past the goal. */
     val wakePending: Boolean = false,
 )
@@ -71,7 +74,9 @@ private fun snapshot(ctx: Context): Snap {
         total = s.total,
         streak = p.streak,
         next = nextText,
-        penalty = Game.penaltyActive(data, today) && data.day(today).done[Game.penaltyQuest.id] == null,
+        penalty = Game.comebackActive(data, today) && data.day(today).done[Game.comebackQuest.id] == null,
+        quote = com.arise.app.game.Quotes.forDay(data.settings, today).second.line,
+        onTrack = "${p.consistency}/${p.consistencyOf}",
         wakePending = s.plan.blocks.any { b ->
             b.quest?.kind == com.arise.app.game.Kind.WAKE && !b.time.isAfter(now) && data.day(today).wakeTime == null && now.isBefore(LocalTime.of(14, 0))
         },
@@ -109,14 +114,14 @@ private fun WidgetBody(s: Snap) {
             )
             Spacer(GlanceModifier.defaultWeight())
             Text(
-                "Lv ${s.level} · ${s.rank}-Rank · 🔥${s.streak}",
+                "Lv ${s.level} · ${s.rank}-Rank · 📈${s.onTrack}",
                 style = TextStyle(color = ColorProvider(TextDim), fontSize = 12.sp),
             )
         }
         Spacer(GlanceModifier.height(8.dp))
         Text(
-            if (s.penalty) "PENALTY QUEST ACTIVE" else "QUEST",
-            style = TextStyle(color = ColorProvider(if (s.penalty) Danger else TextDim), fontSize = 10.sp, fontWeight = FontWeight.Bold),
+            if (s.penalty) "GENTLE DAY · ONE SMALL WIN" else "QUEST",
+            style = TextStyle(color = ColorProvider(if (s.penalty) Good else TextDim), fontSize = 10.sp, fontWeight = FontWeight.Bold),
         )
         Text(
             s.next,
@@ -136,9 +141,13 @@ private fun WidgetBody(s: Snap) {
         )
         Spacer(GlanceModifier.height(4.dp))
         Text(
-            "Daily quests ${s.done}/${s.total}",
+            "Core quests ${s.done}/${s.total}",
             style = TextStyle(color = ColorProvider(TextDim), fontSize = 11.sp),
         )
+        if (s.quote.isNotBlank()) {
+            Spacer(GlanceModifier.height(6.dp))
+            Text(s.quote, maxLines = 2, style = TextStyle(color = ColorProvider(TextDim), fontSize = 10.sp))
+        }
     }
 }
 

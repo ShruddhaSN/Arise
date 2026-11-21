@@ -71,7 +71,7 @@ object Blocker {
     fun sync(ctx: Context, data: AppData) {
         val s = data.settings
         val today = LocalDate.now()
-        val bed = Program.bedtime(Program.week(s, today))
+        val bed = s.bedGoal
         val wake = minOf(s.wakeOffice, s.wakeWfh, s.wakeOff)
         prefs(ctx).edit()
             .putStringSet("apps", s.blocked)

@@ -22,8 +22,10 @@ enum class Kind {
     AMOUNT,
     /** "I'm up": scored by how close the actual wake time is to the goal. */
     WAKE,
-    /** A checklist (morning / night routine). Completes itself when every required item is ticked. */
+    /** A checklist (morning / night routine). Optional; you tap "Done for today" when you're finished. */
     ROUTINE,
+    /** Last night's sleep, detected (screen / Health Connect) or corrected by hand. [Quest.target] = goal minutes. */
+    SLEEP,
 }
 
 data class RoutineItem(val id: String, val label: String, val icon: String, val optional: Boolean = false)
@@ -62,15 +64,23 @@ data class Block(
     val quest: Quest? = null,
     val notify: Boolean = true,
     val special: Special = Special.NONE,
+    /** A reminder for this quest id: skipped once that quest is done. */
+    val remindFor: String? = null,
 )
 
 /** What the plan needs beyond the settings: what actually happened today. */
 data class PlanCtx(
     /** Actual wake time, once "I'm up" is tapped. The morning moves with it. */
     val wake: LocalTime? = null,
-    val event: Event? = null,
+    val events: List<Event> = emptyList(),
     /** Tomorrow's day type, for "soak chia tonight". */
     val tomorrow: DayType = DayType.WEEKEND,
+    /** Today's run / strength slot, from the weekly count (missed sessions move to the next free day). */
+    val workout: Workout? = null,
+    /** The day after a rest day: lighter targets. */
+    val gentle: Boolean = false,
+    /** To-do sessions and other blocks worked out from the rest of your data. */
+    val extra: List<Block> = emptyList(),
 )
 
 data class DayPlan(
@@ -157,16 +167,28 @@ object Program {
         else -> DayType.WEEKEND
     }
 
-    /** Runs Tue/Fri/Sun, strength Wed/Sat. Mon/Thu are recovery days (steps only). */
-    fun workout(s: Settings, date: LocalDate, type: DayType): Workout = when {
-        type == DayType.OFF || type == DayType.SICK -> Workout.NONE
-        date == s.earliest -> Workout.FIRST_WALK
-        else -> when (date.dayOfWeek) {
-            DayOfWeek.TUESDAY, DayOfWeek.FRIDAY, DayOfWeek.SUNDAY -> Workout.RUN
-            DayOfWeek.WEDNESDAY, DayOfWeek.SATURDAY -> Workout.STRENGTH
-            else -> Workout.NONE
+    /**
+     * Where each of the week's sessions would fall, spread out (runs and strength alternate). Index = day of the
+     * program week (0..6). Game moves a missed one to the next free day.
+     */
+    fun weekSlots(s: Settings): List<Pair<Int, Workout>> {
+        val runs = s.runsPerWeek.coerceIn(0, 7)
+        val str = s.strengthPerWeek.coerceIn(0, 7 - runs)
+        val n = runs + str
+        if (n == 0) return emptyList()
+        val order = mutableListOf<Workout>()
+        var r = runs
+        var k = str
+        while (r + k > 0) {
+            if (r > 0 && (r >= k || order.lastOrNull() == Workout.STRENGTH)) { order += Workout.RUN; r-- }
+            else if (k > 0) { order += Workout.STRENGTH; k-- }
+            else { order += Workout.RUN; r-- }
         }
+        return order.mapIndexed { i, w -> (1 + i * 7 / n).coerceAtMost(6) to w }
     }
+
+    /** Core quests: the only ones that count for being on track. Everything else is a side quest. */
+    val CORE = setOf("wake", "sleep", "steps", "run", "strength")
 
     fun wakeGoal(s: Settings, type: DayType): LocalTime = when (type) {
         DayType.OFFICE -> s.wakeOffice
@@ -185,8 +207,6 @@ object Program {
             else -> 30
         }
     }
-
-    fun bedtime(week: Int): LocalTime = if (week <= 1) LocalTime.of(23, 30) else LocalTime.of(23, 0)
 
     private fun waterLitres(week: Int): Double = if (week <= 2) 2.5 else 3.0
 
@@ -244,24 +264,22 @@ object Program {
     private fun routine(id: String, title: String, icon: String, defs: List<RoutineDef>, date: LocalDate, type: DayType, tomorrow: DayType, limit: Int): Quest? {
         val items = defs.filter { applies(it, date, type, tomorrow) }
             .map { RoutineItem(it.id, itemLabel(it, date), it.icon, it.optional) }
-        if (items.none { !it.optional }) return null
+        if (items.isEmpty()) return null
         return Quest(
-            id, title, "${items.count { !it.optional }} steps. Open the checklist and tick as you go. It completes itself.",
-            null, Stat.VIT, 30, icon, Kind.ROUTINE, items = items, limitMin = limit,
+            id, title, "A checklist of what you did. Nothing here is compulsory. Tap \"Done for today\" whenever you're finished.",
+            null, Stat.VIT, 20, icon, Kind.ROUTINE, items = items, limitMin = null, optional = true,
         )
     }
 
-    private fun sleep(at: LocalTime, relaxed: Boolean): Quest = Quest(
-        "sleep", "Lights off by ${fmt(at)}",
-        if (relaxed) "Big day. Home, night routine, lights off by ${fmt(at)}." else "Phone charging away from the bed, lights off by ${fmt(at)}",
-        "Lights off by ${fmt(capPlus(at, 30))}", Stat.VIT, 40, "😴", limitMin = null,
+    private fun sleep(s: Settings) = Quest(
+        "sleep", "Sleep", "Detected from your phone overnight, or from Samsung Health. Goal ${s.sleepGoalMin / 60}h${if (s.sleepGoalMin % 60 > 0) " ${s.sleepGoalMin % 60}m" else ""}, asleep by ${fmt(s.bedGoal)}. Tap to correct it.",
+        null, Stat.VIT, 40, "😴", Kind.SLEEP, target = s.sleepGoalMin.toDouble(), unit = "min", limitMin = null,
     )
 
-    fun learnTarget(s: Settings, week: Int, type: DayType): Int = learnMinutes(s, week) + if (isWeekend(type)) 15 else 0
-
-    private fun learn(s: Settings, week: Int, type: DayType) = Quest(
-        "learn", "Today's lesson", "Open today's lesson, make notes. Then the System asks you 1–2 questions: answer out loud.",
-        null, Stat.INT, 40, "📚", Kind.AMOUNT, target = learnTarget(s, week, type).toDouble(), unit = "min", step = 5.0, limitMin = 90,
+    /** One learning side quest, open all day. Counts once you've answered its recall question. */
+    private val learn = Quest(
+        "learn", "Learn something", "Today's pick: a short video or a few minutes in a free app. Then answer one question out loud. Side quest.",
+        null, Stat.INT, 40, "📚", limitMin = null, optional = true,
     )
 
     private fun med(i: Int, m: Med) = Quest(
@@ -273,9 +291,10 @@ object Program {
         Kind.AMOUNT, target = waterLitres(week), unit = "L", step = 0.25, limitMin = null,
     )
 
-    private fun steps(s: Settings, week: Int) = Quest(
-        "steps", "Steps", "From your phone's health app. Walks after meals count here.", null, Stat.AGI, 40, "👣",
-        Kind.AMOUNT, target = stepGoal(s, week), unit = "steps", step = 1000.0, limitMin = null,
+    private fun steps(s: Settings, week: Int, gentle: Boolean) = Quest(
+        "steps", "Steps", (if (s.healthSync) "Synced from Samsung Health." else "Type your step count from your phone's health app.") +
+            (if (gentle) " Gentle day: lower goal." else "") + " Walks after meals count here.", null, Stat.AGI, 40, "👣",
+        Kind.AMOUNT, target = (stepGoal(s, week) * if (gentle) 0.75 else 1.0).let { Math.round(it / 500.0) * 500.0 }, unit = "steps", step = 1000.0, limitMin = null,
     )
 
     private val flags = mapOf(
@@ -424,6 +443,7 @@ object Program {
 
     /** Quests that can be moved around an event. */
     private val movable = setOf("run", "strength", "learn", "stretch", "mobility", "review", "deepwork", "reach")
+    private fun movableId(id: String) = id in movable || id.startsWith("sk_") || id.startsWith("bc_") || id.startsWith("todo_")
 
     /**
      * The day's schedule, built from the user's own setup: work or college hours and commute, meal times,
@@ -434,8 +454,8 @@ object Program {
     fun plan(s: Settings, date: LocalDate, type: DayType, runLevel: Int = week(s, date), ctx: PlanCtx = PlanCtx()): DayPlan {
         val w = week(s, date)
         val runWeek = (runLevel + s.runWeekShift).coerceAtLeast(1)
-        val ev = ctx.event?.takeIf { type != DayType.SICK && type != DayType.OFFICE }
-        val wq = workoutQuest(s, date, workout(s, date, type), w, runWeek)
+        val evs = if (type == DayType.SICK || type == DayType.OFFICE) emptyList() else ctx.events
+        val wq = workoutQuest(s, date, ctx.workout ?: Workout.NONE, w, runWeek)
         val goal = wakeGoal(s, type)
         val woke = ctx.wake != null
         val up = ctx.wake ?: goal
@@ -443,7 +463,7 @@ object Program {
         val notes = mutableListOf<String>()
         val areas = Profile.areas(s)
         val m = s.meals
-        val bed = bedtime(w)
+        val bed = s.bedGoal
         val place = if (s.student) "college" else "work"
         var breakfastAt = m.breakfast
 
@@ -496,7 +516,7 @@ object Program {
                 b += Block(breakfastAt, "Breakfast", if (breakfastAt.isBefore(leave)) "Before you leave. Protein first." else "At $place. Protein first, then carbs.", notify = false)
                 b += Block(leave, "Leave for $place", "Music, a podcast or a nap on the way. Recovery counts.", notify = false)
                 if (Profile.CAREER in areas) b += Block(s.workStart.plusMinutes(60), "Deep work", quest = deepWork)
-                b += Block(t(11, 0), "Rescue check", special = Special.RESCUE)
+                s.rescue?.let { b += Block(it, "Rescue check", special = Special.RESCUE) }
                 b += Block(m.lunch.plusMinutes(15), "Walk", quest = walkAfter(s, "lunch", "walk_lunch"))
                 // Train once you're home, at least 1.5 h after lunch and finished before dinner.
                 if (wq != null) {
@@ -514,7 +534,7 @@ object Program {
                     if (woke) notes += "Mobility moved to ${fmt(at)}: no time before leaving."
                 }
                 b += Block(m.dinner.plusMinutes(15), "Walk", quest = walkAfter(s, "dinner", "walk_dinner"))
-                b += Block(later(m.dinner.plusMinutes(30), home.plusMinutes(30)), "Lesson", quest = learn(s, w, type))
+
             }
             DayType.WFH -> {
                 var trainedAfterWork = false
@@ -536,13 +556,10 @@ object Program {
                 }
                 homeBreakfast(later(m.breakfast, trainEnd ?: up))
                 if (Profile.CAREER in areas) b += Block(s.workStart.plusMinutes(15), "Deep work", quest = deepWork)
-                b += Block(t(11, 0), "Rescue check", special = Special.RESCUE)
+                s.rescue?.let { b += Block(it, "Rescue check", special = Special.RESCUE) }
                 b += Block(s.workStart.plusMinutes(90), "Move break", "Stand up, walk for 2 min, drink water")
                 b += Block(m.lunch.plusMinutes(15), "Walk", quest = walkAfter(s, "lunch", "walk_lunch"))
-                b += Block(
-                    if (trainedAfterWork) capPlus(s.workEnd, 100) else s.workEnd.plusMinutes(30),
-                    "Lesson", quest = learn(s, w, type),
-                )
+
                 b += Block(capPlus(s.workEnd, 60), "Snack swap", "Chana, makhana, fruit or curd instead of fried snacks")
                 b += Block(later(t(18, 30), capPlus(s.workEnd, 150)), "Stretch", quest = stretch)
                 b += Block(m.dinner.plusMinutes(15), "Walk", quest = walkAfter(s, "dinner", "walk_dinner"))
@@ -558,9 +575,7 @@ object Program {
                     }
                 }
                 homeBreakfast(later(m.breakfast, up.plusMinutes(75)))
-                val lessonAt = if (up.isBefore(t(10, 30))) t(11, 30) else t(15, 30)
-                if (woke && lessonAt == t(15, 30)) notes += "Lesson moved to ${fmt(lessonAt)}."
-                b += Block(lessonAt, "Lesson · deep dive", quest = learn(s, w, type))
+
                 b += Block(m.lunch.plusMinutes(15), "Walk", quest = walkAfter(s, "lunch", "walk_lunch"))
                 b += Block(t(18, 0), "Stretch", quest = stretch)
                 b += Block(m.dinner.plusMinutes(15), "Walk", quest = walkAfter(s, "dinner", "walk_dinner"))
@@ -594,22 +609,37 @@ object Program {
         if (type != DayType.SICK && (Profile.MIND in areas || Profile.SPIRIT in areas || Profile.CRISIS in areas)) {
             b += Block(t(21, 50), "Journal", quest = journal)
         }
-        if (type != DayType.SICK && ev?.wholeDay != true) b += emergencyBlocks(s, date, type)
-        b += Challenges.blocks(s, date, type)
-        b += Block(t(21, 45), "Quest check", special = Special.CHECK_IN)
-        routine("night", "Night routine", "🌙", s.night, date, type, ctx.tomorrow, 40)?.let {
-            b += Block(minus(bed, 40), "Night routine", quest = it)
+        // The lesson is open from the morning; an optional reminder at the time you chose.
+        if (type != DayType.SICK && evs.none { it.wholeDay }) {
+            b += Block(up, "Learn something", quest = learn, notify = false)
+            s.lessonAt?.let { b += Block(it, "Learn something", "Today's pick is waiting. A few minutes is enough.", remindFor = "learn") }
         }
-        b += Block(bed, "Sleep", quest = sleep(bed, false))
+        if (type != DayType.SICK && evs.none { it.wholeDay }) b += emergencyBlocks(s, date, type)
+        b += Challenges.blocks(s, date, type)
+        b += ctx.extra
+        s.checkIn?.let { b += Block(it, "Quest check", special = Special.CHECK_IN) }
+        routine("night", "Night routine", "🌙", s.night, date, type, ctx.tomorrow, 40)?.let {
+            b += Block(minus(bed, 40), "Night routine", quest = it, notify = false)
+        }
+        s.windDown?.let { b += Block(it, "Wind-down", "Dim the lights, phone on charge away from the bed, no new episodes.") }
+        b += Block(bed, "Bedtime goal", "Asleep by ${fmt(bed)} is the goal. Phone down now; the System will see how you slept.")
 
-        if (ev != null) applyEvent(ev, up, w, b, notes)
+        for (ev in evs.sortedBy { it.start }) applyEvent(ev, up, b, notes, bed)
 
-        val allDay = listOfNotNull(water(w), steps(s, w).takeIf { type != DayType.SICK }, language(s)?.takeIf { type != DayType.SICK })
-        return DayPlan(date, type, b.sortedBy { it.time }, allDay, notes)
+        if (ctx.gentle) notes += "Gentle day after a rest day: lighter step goal. One small win is enough."
+        // Only the core counts. Everything else becomes a side quest: bonus XP, never against you.
+        val core = b.map { blk -> blk.quest?.let { q -> if (q.id !in CORE && !q.optional) blk.copy(quest = q.copy(optional = true)) else null } ?: blk }
+        val allDay = listOfNotNull(
+            sleep(s).takeIf { type != DayType.SICK },
+            steps(s, w, ctx.gentle).takeIf { type != DayType.SICK },
+            water(w).copy(optional = true),
+            language(s)?.takeIf { type != DayType.SICK }?.copy(optional = true),
+        )
+        return DayPlan(date, type, core.sortedBy { it.time }, allDay, notes)
     }
 
     /** Moves, excuses or drops whatever the event overlaps, and adds "get ready". */
-    private fun applyEvent(ev: Event, up: LocalTime, week: Int, b: MutableList<Block>, notes: MutableList<String>) {
+    private fun applyEvent(ev: Event, up: LocalTime, b: MutableList<Block>, notes: MutableList<String>, bed: LocalTime) {
         val after = capPlus(ev.realEnd, 20)
         val before = minus(ev.readyStart, 60)
         val excused = mutableListOf<String>()
@@ -622,7 +652,7 @@ object Program {
                 q == null && blk.special == Special.NONE -> iter.remove()
                 q == null -> Unit
                 q.expires || q.id.startsWith("walk_") -> iter.remove()
-                q.id !in movable && !q.id.startsWith("sk_") && !q.id.startsWith("bc_") -> Unit
+                !movableId(q.id) -> Unit
                 ev.wholeDay -> {
                     iter.remove()
                     excused += q.title
@@ -655,12 +685,12 @@ object Program {
             b[nightIdx] = b[nightIdx].copy(time = nightAt)
             notes += "Night routine moved to ${fmt(nightAt)}."
         }
-        val bed = bedtime(week)
         if (ev.realEnd.isAfter(minus(bed, 30))) {
             val lightsOff = capPlus(ev.realEnd, 45)
-            val i = b.indexOfFirst { it.quest?.id == "sleep" }
-            if (i >= 0) b[i] = Block(lightsOff, "Sleep", quest = sleep(lightsOff, true))
-            notes += "Lights-off moved to ${fmt(lightsOff)}. Still: home, routine, sleep."
+            val i = b.indexOfFirst { it.title == "Bedtime goal" }
+            if (i >= 0) b[i] = Block(lightsOff, "Bedtime goal", "Big day. Home, water, night routine, then sleep.")
+            b.removeAll { it.title == "Wind-down" && ev.covers(it.time) }
+            notes += "Bedtime goal moved to ${fmt(lightsOff)} for ${ev.title}. Enjoy it."
         }
         if (ev.readyStart != ev.start) {
             b += Block(ev.readyStart, "Get ready: ${ev.title}", "Shower, outfit, bag. Drink a glass of water before you go.")

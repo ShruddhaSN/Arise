@@ -22,6 +22,7 @@ import com.arise.app.game.Block
 import com.arise.app.game.Feats
 import com.arise.app.game.Game
 import com.arise.app.game.Kind
+import com.arise.app.game.Quotes
 import com.arise.app.game.Special
 import com.arise.app.game.fmt
 import com.arise.app.widget.CountdownWidget
@@ -57,9 +58,42 @@ object Reminders {
 
     /** Reschedule the next reminder and redraw the widgets. Call after any data change. */
     fun refresh(ctx: Context) {
-        Blocker.sync(ctx, Store.load(ctx))
+        val data = Store.load(ctx)
+        Blocker.sync(ctx, data)
+        cancelSettled(ctx, data)
         scheduleNext(ctx, LocalDateTime.now())
         updateWidget(ctx)
+    }
+
+    /** Removes notifications for quests you've already done or skipped, wherever you ticked them. */
+    fun cancelSettled(ctx: Context, data: AppData) {
+        val today = LocalDate.now()
+        val rec = data.records[today] ?: return
+        val nm = NotificationManagerCompat.from(ctx)
+        for (b in Game.plan(data, today).blocks) {
+            val id = b.quest?.id ?: b.remindFor ?: continue
+            val q = Game.plan(data, today).quests.firstOrNull { it.id == id } ?: continue
+            if (!Game.settled(q, rec)) continue
+            val n = b.time.toSecondOfDay()
+            nm.cancel(n)
+            nm.cancel(n + 1)
+            if (q.kind == Kind.WAKE) clearWake(ctx)
+        }
+        rec.deferred.forEach { (id, ms) ->
+            val q = Game.plan(data, today).quests.firstOrNull { it.id == id } ?: return@forEach
+            if (Game.settled(q, rec)) {
+                val t = java.time.Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).toLocalTime()
+                nm.cancel(t.toSecondOfDay() + 1)
+            }
+        }
+    }
+
+    /** Side quests stay quiet, except the ones you chose or that matter: medicines, to-dos, challenges, reminders you set. */
+    private fun notifies(b: Block): Boolean {
+        if (!b.notify) return false
+        val q = b.quest ?: return true
+        if (!q.optional) return true
+        return q.id.startsWith("med_") || q.id.startsWith("todo_") || q.id.startsWith("sk_") || q.id.startsWith("bc_") || q.id.startsWith("wc_") || q.expires
     }
 
     fun updateWidget(ctx: Context, onDone: () -> Unit = {}) {
@@ -107,7 +141,7 @@ object Reminders {
         loop@ for (d in 0L..7L) {
             val date = today.plusDays(d)
             for (b in Game.plan(data, date).blocks) {
-                if (!b.notify) continue
+                if (!notifies(b)) continue
                 val at = LocalDateTime.of(date, b.time)
                 if (at.isAfter(from)) {
                     candidates += Next(at, b.time, null, false)
@@ -155,15 +189,17 @@ object Reminders {
             post(ctx, "[SYSTEM] Rescheduled quest: ${dq.title}", "It's time. ${dq.full}", time.toSecondOfDay() + 1, doneId = dq.id.takeIf { dq.kind == Kind.CHECK }, date = date)
             return
         }
-        val b = plan.blocks.firstOrNull { it.time == time && it.notify } ?: return
+        val b = plan.blocks.firstOrNull { it.time == time && notifies(it) } ?: return
         val q = b.quest
         if (q != null && Game.settled(q, rec)) return // already handled, no nagging
+        b.remindFor?.let { id -> plan.quests.firstOrNull { it.id == id }?.let { rq -> if (Game.settled(rq, rec)) return } }
 
         if (nudge && q != null) {
+            // Same id as the first notification: it updates that one instead of adding another.
             post(
                 ctx, "[SYSTEM] ${q.title} is still waiting",
-                "Started ${fmt(time)}. Do it now, or tap Later / Not today in the app. This is the only reminder.",
-                time.toSecondOfDay() + 2, doneId = q.id.takeIf { q.kind == Kind.CHECK }, date = date,
+                "From ${fmt(time)}. Whenever you're ready, or tap Later / Not today in the app. No pressure.",
+                time.toSecondOfDay(), doneId = q.id.takeIf { q.kind == Kind.CHECK }, date = date,
             )
             return
         }
@@ -171,11 +207,12 @@ object Reminders {
         when {
             b.special == Special.CHECK_IN -> {
                 val r = Feats.report(data, date)
-                val title = if (r.cleared) "[SYSTEM] Daily report · cleared" else "[SYSTEM] Daily report"
-                val text = "Quests ${r.done}/${r.total} · +${r.xp} XP" +
-                    (if (r.cleared) ". The streak lives, $name." else ". ${plan.quests.count { !it.optional && !Game.counts(it, rec) && rec?.skipped?.containsKey(it.id) != true }} still open. Clear them before midnight.")
-                post(ctx, title, text, time.toSecondOfDay())
-                SystemAlert.show(ctx, SystemAlert.REPORT, title.removePrefix("[SYSTEM] ").uppercase(), text, date = date)
+                val title = if (r.cleared) "[SYSTEM] Daily report · on track" else "[SYSTEM] Daily report"
+                val open = plan.quests.count { !it.optional && !Game.counts(it, rec) && rec?.skipped?.containsKey(it.id) != true }
+                val text = "Core ${r.done}/${r.total} · +${r.xp} XP" +
+                    (if (r.cleared) ". Well done, $name." else if (open > 0) ". $open core quest${if (open == 1) "" else "s"} still open, if you have the energy. If not, rest is fine." else ".")
+                if (SystemAlert.canPop(ctx)) SystemAlert.show(ctx, SystemAlert.REPORT, title.removePrefix("[SYSTEM] ").uppercase(), text, date = date)
+                else post(ctx, title, text, time.toSecondOfDay())
             }
             b.special == Special.RESCUE -> {
                 // Only speak up if the morning slipped: 2+ morning quests still open.
@@ -184,18 +221,17 @@ object Reminders {
                 post(ctx, "[SYSTEM] The day can still be cleared", "Next quest: ${open.first().quest!!.title}. One card at a time, $name.", time.toSecondOfDay())
             }
             q != null && q.kind == Kind.WAKE -> {
-                postWake(ctx, q.title, "Player, wake up. Tap I'M UP the moment you're out of bed. The Daily Quest has arrived.")
-                val penalty = Game.penaltyActive(data, date)
+                postWake(ctx, q.title, "Good morning, $name. Tap I'M UP the moment you're out of bed. The Daily Quest has arrived.")
+                // The lock-screen notification above is the one notification; the pop-up only opens over apps.
                 SystemAlert.show(
                     ctx, SystemAlert.WAKE, "THE DAILY QUEST HAS ARRIVED",
-                    "Goal ${fmt(time)}. Get out of bed, then tap I'M UP. Phone down for 30 minutes after." +
-                        if (penalty) "\nA penalty quest is waiting from yesterday." else "",
-                    date = date,
+                    "Goal ${fmt(time)}. Get out of bed, then tap I'M UP. ${Quotes.forDay(data.settings, date).second.line}",
+                    date = date, fallback = false,
                 )
             }
             q != null && q.expires -> {
-                post(ctx, "[SYSTEM] ⚡ ${q.title}", "${q.full}\nReward: +${q.xp} ${q.stat.label} XP", time.toSecondOfDay(), doneId = q.id, date = date)
-                SystemAlert.show(ctx, SystemAlert.EMERGENCY, q.title, "${q.full}\nReward: +${q.xp} ${q.stat.label} XP", questId = q.id, date = date)
+                if (SystemAlert.canPop(ctx)) SystemAlert.show(ctx, SystemAlert.EMERGENCY, q.title, "${q.full}\nReward: +${q.xp} ${q.stat.label} XP", questId = q.id, date = date)
+                else post(ctx, "[SYSTEM] ⚡ ${q.title}", "${q.full}\nReward: +${q.xp} ${q.stat.label} XP", time.toSecondOfDay(), doneId = q.id, date = date)
             }
             q != null -> {
                 post(

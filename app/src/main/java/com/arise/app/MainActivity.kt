@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import com.arise.app.data.AppData
 import com.arise.app.data.Settings
 import com.arise.app.data.Store
+import com.arise.app.game.Challenges
 import com.arise.app.game.Feats
 import com.arise.app.game.Game
 import com.arise.app.game.Report
@@ -60,6 +61,7 @@ import com.arise.app.ui.tutorialSteps
 import com.arise.app.ui.tutorialTarget
 import com.arise.app.ui.Voice
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.LocalTime
 
@@ -109,6 +111,7 @@ private data class Tab(val icon: String, val label: String)
 private val tabs = listOf(
     Tab("⚔", "Today"),
     Tab("🏃", "Train"),
+    Tab("📝", "To-do"),
     Tab("⏱", "Tools"),
     Tab("📈", "Log"),
     Tab("👤", "Player"),
@@ -133,6 +136,16 @@ fun AriseApp() {
         Reminders.refresh(ctx)
     }
     Voice.enabled = data.settings.voice
+    // Sleep (screen off overnight / Samsung Health) and steps fill themselves in. No ticking.
+    LaunchedEffect(today) {
+        while (true) {
+            val synced = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { com.arise.app.notify.Health.sync(ctx, Store.load(ctx)) }.getOrNull()
+            }
+            if (synced != null) update(synced)
+            delay(15 * 60_000L)
+        }
+    }
     // Notifications and pop-ups (like "I'm up" from the lock screen) change data outside the app.
     val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
     androidx.compose.runtime.DisposableEffect(lifecycle) {
@@ -144,6 +157,11 @@ fun AriseApp() {
                     Store.save(ctx, it)
                 }
                 if (Store.toJson(fresh) != Store.toJson(data)) data = fresh
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                    runCatching { com.arise.app.notify.Health.sync(ctx, Store.load(ctx)) }.getOrNull()?.let { synced ->
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { update(synced) }
+                    }
+                }
                 now = LocalTime.now()
                 today = LocalDate.now()
             }
@@ -229,7 +247,7 @@ fun AriseApp() {
                                 selected = tab == i,
                                 onClick = { tab = i },
                                 icon = { Text(t.icon, fontSize = 18.sp) },
-                                label = { Text(t.label) },
+                                label = { Text(t.label, fontSize = 11.sp, maxLines = 1) },
                                 colors = NavigationBarItemDefaults.colors(
                                     selectedTextColor = C.Glow,
                                     unselectedTextColor = C.Muted,
@@ -252,8 +270,9 @@ fun AriseApp() {
                             onTargetChange = { trainTarget = it },
                             onAutoFlowConsumed = { autoFlow = null },
                         )
-                        2 -> ToolsScreen(data, today, update, onChallenges = { challengesOpen = true })
-                        3 -> LogScreen(data, today, update)
+                        2 -> com.arise.app.ui.TodoScreen(data, today, update)
+                        3 -> ToolsScreen(data, today, update, onChallenges = { challengesOpen = true })
+                        4 -> LogScreen(data, today, update)
                         else -> PlayerScreen(
                             data, today, progress, update,
                             onEditSetup = { editingSetup = true },

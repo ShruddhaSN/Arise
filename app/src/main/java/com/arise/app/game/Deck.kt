@@ -47,6 +47,12 @@ object Deck {
             .sortedBy { b -> rec?.deferred?.get(b.quest!!.id) ?: millis(date, b.time) }
     }
 
+    /** The core deck: only what counts for being on track. */
+    fun core(data: AppData, date: LocalDate, now: LocalTime): List<Block> = cards(data, date, now).filter { !it.quest!!.optional }
+
+    /** Side quests that are open now. Optional; nothing happens if you leave them. */
+    fun side(data: AppData, date: LocalDate, now: LocalTime): List<Block> = cards(data, date, now).filter { it.quest!!.optional }
+
     /** Cards on snooze, with the time they come back. */
     fun snoozed(data: AppData, date: LocalDate, now: LocalTime, nowMs: Long = System.currentTimeMillis()): List<Pair<Block, Long>> =
         due(data, date, now).mapNotNull { b ->

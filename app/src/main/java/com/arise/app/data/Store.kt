@@ -80,6 +80,19 @@ object Store {
             put("blockNight", s.blockNight)
             put("blockFocus", s.blockFocus)
             put("focusMin", s.focusMin)
+            put("bedGoal", s.bedGoal.toString())
+            put("sleepGoalMin", s.sleepGoalMin)
+            s.windDown?.let { put("windDown", it.toString()) } ?: put("windDownOff", true)
+            s.checkIn?.let { put("checkIn", it.toString()) } ?: put("checkInOff", true)
+            s.rescue?.let { put("rescue", it.toString()) } ?: put("rescueOff", true)
+            s.lessonAt?.let { put("lessonAt", it.toString()) }
+            put("runsPerWeek", s.runsPerWeek)
+            put("strengthPerWeek", s.strengthPerWeek)
+            put("scheduleSet", s.scheduleSet)
+            put("healthSync", s.healthSync)
+            put("sleepDetect", s.sleepDetect)
+            put("favQuotes", JSONArray(s.favQuotes.toList()))
+            s.weeklyDeclined?.let { put("weeklyDeclined", it.toString()) }
             put("challenges", JSONArray(s.challenges.map { c ->
                 JSONObject().apply {
                     put("id", c.id)
@@ -88,6 +101,7 @@ object Store {
                     c.time?.let { put("time", it.toString()) }
                     put("keep", c.keep)
                     c.quit?.let { put("quit", it.toString()) }
+                    c.end?.let { put("end", it.toString()) }
                 }
             }))
         })
@@ -109,14 +123,18 @@ object Store {
                 r.longestRunSec?.let { put("longestRunSec", it) }
                 r.runMinutes?.let { put("runMinutes", it) }
                 if (r.routine.isNotEmpty()) put("routine", JSONArray(r.routine.toList()))
-                r.event?.let { e ->
-                    put("event", JSONObject().apply {
-                        put("title", e.title)
-                        put("start", e.start.toString())
-                        put("end", e.end.toString())
-                        put("readyMin", e.readyMin)
-                    })
+                if (r.events.isNotEmpty()) {
+                    put("events", JSONArray(r.events.map { e ->
+                        JSONObject().apply {
+                            put("title", e.title)
+                            put("start", e.start.toString())
+                            put("end", e.end.toString())
+                            put("readyMin", e.readyMin)
+                        }
+                    }))
                 }
+                r.sleepEnd?.let { put("sleepEnd", it) }
+                r.sleepSource?.let { put("sleepSource", it) }
                 if (r.exSkips.isNotEmpty()) {
                     put("exSkips", JSONArray(r.exSkips.map { JSONObject().put("exercise", it.exercise).put("reason", it.reason.name) }))
                 }
@@ -124,6 +142,20 @@ object Store {
             })
         }
         root.put("days", days)
+        root.put("tasks", JSONArray(data.tasks.map { t ->
+            JSONObject().apply {
+                put("id", t.id)
+                put("title", t.title)
+                put("created", t.created.toString())
+                t.deadline?.let { put("deadline", it.toString()) }
+                put("kind", t.kind.name)
+                put("steps", JSONArray(t.steps.map { JSONObject().put("title", it.title).put("share", it.share) }))
+                put("progress", t.progress)
+                put("pairable", t.pairable)
+                t.doneOn?.let { put("doneOn", it.toString()) }
+                put("log", JSONObject().apply { t.log.forEach { (k, v) -> put(k.toString(), v) } })
+            }
+        }))
         return root.toString()
     }
 
@@ -194,6 +226,19 @@ object Store {
             blockNight = sj.optBoolean("blockNight", false),
             blockFocus = sj.optBoolean("blockFocus", true),
             focusMin = sj.optInt("focusMin", 25),
+            bedGoal = sj.str("bedGoal")?.let(LocalTime::parse) ?: d.bedGoal,
+            sleepGoalMin = sj.optInt("sleepGoalMin", d.sleepGoalMin),
+            windDown = if (sj.optBoolean("windDownOff", false)) null else sj.str("windDown")?.let(LocalTime::parse) ?: d.windDown,
+            checkIn = if (sj.optBoolean("checkInOff", false)) null else sj.str("checkIn")?.let(LocalTime::parse) ?: d.checkIn,
+            rescue = if (sj.optBoolean("rescueOff", false)) null else sj.str("rescue")?.let(LocalTime::parse) ?: d.rescue,
+            lessonAt = sj.str("lessonAt")?.let(LocalTime::parse),
+            runsPerWeek = sj.optInt("runsPerWeek", d.runsPerWeek),
+            strengthPerWeek = sj.optInt("strengthPerWeek", d.strengthPerWeek),
+            scheduleSet = sj.optBoolean("scheduleSet", false),
+            healthSync = sj.optBoolean("healthSync", false),
+            sleepDetect = sj.optBoolean("sleepDetect", true),
+            favQuotes = sj.optJSONArray("favQuotes")?.let { a -> (0 until a.length()).map { a.getInt(it) }.toSet() } ?: emptySet(),
+            weeklyDeclined = sj.str("weeklyDeclined")?.let(LocalDate::parse),
             challenges = sj.optJSONArray("challenges")?.let { a ->
                 (0 until a.length()).mapNotNull { i ->
                     val c = a.getJSONObject(i)
@@ -205,6 +250,7 @@ object Store {
                             time = c.str("time")?.let(LocalTime::parse),
                             keep = c.optBoolean("keep", true),
                             quit = c.str("quit")?.let(LocalDate::parse),
+                            end = c.str("end")?.let(LocalDate::parse),
                         )
                     }.getOrNull()
                 }
@@ -234,14 +280,20 @@ object Store {
                 longestRunSec = o.int("longestRunSec"),
                 runMinutes = o.int("runMinutes"),
                 routine = o.optJSONArray("routine")?.strings()?.toSet() ?: emptySet(),
-                event = o.optJSONObject("event")?.let { e ->
-                    Event(
-                        title = e.optString("title", "Event"),
-                        start = LocalTime.parse(e.getString("start")),
-                        end = LocalTime.parse(e.getString("end")),
-                        readyMin = e.optInt("readyMin", 45),
-                    )
+                // v1.4 stored a single "event".
+                events = (o.optJSONArray("events")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+                    ?: listOfNotNull(o.optJSONObject("event"))).mapNotNull { e ->
+                    runCatching {
+                        Event(
+                            title = e.optString("title", "Event"),
+                            start = LocalTime.parse(e.getString("start")),
+                            end = LocalTime.parse(e.getString("end")),
+                            readyMin = e.optInt("readyMin", 45),
+                        )
+                    }.getOrNull()
                 },
+                sleepEnd = o.str("sleepEnd"),
+                sleepSource = o.str("sleepSource"),
                 exSkips = o.optJSONArray("exSkips")?.let { a ->
                     (0 until a.length()).mapNotNull { i ->
                         val j = a.getJSONObject(i)
@@ -251,7 +303,28 @@ object Store {
                 answers = o.map("answers") { k, j -> j.getString(k) },
             )
         }
-        return AppData(records, settings)
+        val tasks = root.optJSONArray("tasks")?.let { a ->
+            (0 until a.length()).mapNotNull { i ->
+                val t = a.getJSONObject(i)
+                runCatching {
+                    Task(
+                        id = t.getString("id"),
+                        title = t.getString("title"),
+                        created = LocalDate.parse(t.getString("created")),
+                        deadline = t.str("deadline")?.let(LocalDate::parse),
+                        kind = TaskKind.valueOf(t.optString("kind", "ONE_OFF")),
+                        steps = t.optJSONArray("steps")?.let { sa ->
+                            (0 until sa.length()).map { j -> sa.getJSONObject(j).let { TaskStep(it.getString("title"), it.optInt("share", 0)) } }
+                        } ?: emptyList(),
+                        progress = t.optInt("progress", 0),
+                        pairable = t.optBoolean("pairable", false),
+                        doneOn = t.str("doneOn")?.let(LocalDate::parse),
+                        log = t.map("log") { k, j -> j.getInt(k) }.mapKeys { LocalDate.parse(it.key) },
+                    )
+                }.getOrNull()
+            }
+        } ?: emptyList()
+        return AppData(records, settings, tasks)
     }
 
     private fun <T> JSONObject.map(k: String, read: (String, JSONObject) -> T): Map<String, T> {

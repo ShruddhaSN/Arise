@@ -655,8 +655,8 @@ private fun Result(answers: Map<String, List<String>>, length: Int, name: String
             lines.forEach { Text(it, color = C.Text2, fontSize = 13.sp, modifier = Modifier.padding(vertical = 2.dp)) }
         }
         Text(
-            "Miss a day and a penalty quest appears. Never miss twice.",
-            color = C.Danger, fontSize = 12.sp, fontFamily = Mono,
+            "Only your core quests count. Everything else is a bonus. A day off is fine: the next day is just gentler.",
+            color = C.Good, fontSize = 12.sp, fontFamily = Mono,
         )
     }
 }
